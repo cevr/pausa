@@ -1,0 +1,54 @@
+{
+  "name": "pausa",
+  "version": "0.1.0",
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "module": "dist/index.js",
+  "main": "dist/index.cjs",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "compile": "tsup",
+    "prepare": ""
+  },
+  "author": "Cristian Ramos <hello@cvr.im>",
+  "license": "ISC",
+  "peerDependencies": {
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.5",
+    "@types/react-dom": "^18.2.3",
+    "happy-dom": "^9.10.9",
+    "lru-cache": "^9.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsup": "^6.7.0",
+    "typescript": "^5.0.4",
+    "vitest": "^0.31.0"
+  },
+  "keywords": [
+    "library",
+    "typescript",
+    "react",
+    "suspense",
+    "data",
+    "fetching",
+    "caching",
+    "utilities"
+  ],
+  "description": "A small set of utilities to help you manage data fetching and caching in React using Suspense."
+}
