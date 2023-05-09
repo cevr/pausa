@@ -1,12 +1,12 @@
-import type { AnyFunction, Deferred } from './types';
-import { CacheStatus, DeferredStatus } from './types';
+import type { AnyFunction, Deferred } from "./types";
+import { CacheStatus, DeferredStatus } from "./types";
 
 export function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return (
-    typeof value === 'object' &&
+    typeof value === "object" &&
     value !== null &&
-    'then' in value &&
-    typeof value.then === 'function'
+    "then" in value &&
+    typeof value.then === "function"
   );
 }
 
@@ -60,7 +60,7 @@ type Suspender<T> = (...args: any[]) => T;
 // Helper function to read from multiple Suspense caches in parallel.
 // This method will re-throw any thrown value, but only after also calling subsequent caches.
 export function all<Func extends Suspender<any>[]>(
-  suspenders: [...Func],
+  suspenders: [...Func]
 ): { [K in keyof Func]: ReturnType<Extract<Func[K], AnyFunction<any>>> } {
   const values: any[] = [];
   let thrownValue = null;
@@ -80,7 +80,9 @@ export function all<Func extends Suspender<any>[]>(
   return values as any;
 }
 
-export function allProps<Props extends Record<string, Suspender<any>>>(props: Props) {
+export function allProps<Props extends Record<string, Suspender<any>>>(
+  props: Props
+) {
   const keys = Object.keys(props);
   const values = all(keys.map((key) => props[key]));
 
@@ -109,3 +111,5 @@ export function cacheValueIsPending(status: CacheStatus): boolean {
 export function cacheValueIsMissing(status: CacheStatus): boolean {
   return status === CacheStatus.MISSING;
 }
+
+export const cacheKeyDelimiter = ":@:";

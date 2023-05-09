@@ -1,9 +1,9 @@
 /* eslint-disable react-hooks/rules-of-hooks */
 /* eslint-disable @typescript-eslint/no-floating-promises */
-import * as React from 'react';
+import * as React from "react";
 
-import { useForceUpdate } from './hooks';
-import { CacheRecord, CacheStatus } from './types';
+import { useForceUpdate } from "./hooks";
+import { CacheRecord, CacheStatus } from "./types";
 import type {
   CacheLoadContext,
   CacheMap,
@@ -15,12 +15,16 @@ import type {
   SubscribeCallback,
   SuspenseCacheOptions,
   UnsubscribeFromCacheStatusFunction,
-} from './types';
-import { isPromiseLike } from './utils';
+} from "./types";
+import { cacheKeyDelimiter, isPromiseLike } from "./utils";
 
 // this acts as a cache for the results of the fetchValue function
 // with the key being the args passed to the fetchValue function
-export class SuspenseCache<TParams extends any[], TError, TValue> {
+export class SuspenseCache<
+  TParams extends any[] = any[],
+  TError = unknown,
+  TValue = unknown
+> {
   private recordCache: CacheMap<string, CacheRecord<TError, TValue>>;
   // this is used to store the args for a given cache key after a load has been triggered
   // to be used when invalidateAll is called
@@ -36,7 +40,10 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     this.debugLog = (...args: any[]) => {
       if (this.options.debug) {
         // eslint-disable-next-line no-console
-        console.log(`SuspenseCache(${this.options.debugLabel ?? this.options.load.name})`, ...args);
+        console.log(
+          `SuspenseCache(${this.options.debugLabel ?? this.options.load.name})`,
+          ...args
+        );
       }
     };
   }
@@ -58,7 +65,10 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     if (!record) {
       record = CacheRecord.makePending();
 
-      this.debugLog('getOrCreateRecord():: record created', { cacheKey, record });
+      this.debugLog("getOrCreateRecord():: record created", {
+        cacheKey,
+        record,
+      });
 
       this.recordCache.set(cacheKey, record);
 
@@ -66,7 +76,10 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
 
       this.loadValue(cacheKey, record, ...args);
     } else {
-      this.debugLog('getOrCreateRecord():: record returned', { cacheKey, record });
+      this.debugLog("getOrCreateRecord():: record returned", {
+        cacheKey,
+        record,
+      });
     }
 
     return record;
@@ -74,28 +87,38 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
 
   private async loadValue(
     cacheKey: string,
-    record: PendingCacheRecord<TError, TValue> | RevalidatingCacheRecord<TError, TValue>,
+    record:
+      | PendingCacheRecord<TError, TValue>
+      | RevalidatingCacheRecord<TError, TValue>,
     ...args: TParams
   ): Promise<void> {
     this.invalidationArgs.set(cacheKey, args);
     const signal = record.data.controller.signal;
     try {
       const valueOrPromise = this.options.load(record.data.controller, ...args);
-      const value = isPromiseLike(valueOrPromise) ? await valueOrPromise : valueOrPromise;
-      this.debugLog('loadValue():: value resolved', { value, record, aborted: signal.aborted });
+      const value = isPromiseLike(valueOrPromise)
+        ? await valueOrPromise
+        : valueOrPromise;
+      this.debugLog("loadValue():: value resolved", {
+        value,
+        record,
+        aborted: signal.aborted,
+      });
 
       if (!signal.aborted) {
+        this.options.onSuccess?.(value);
         CacheRecord.resolve(record, value);
-        this.debugLog('loadValue():: record resolved', { record });
+        this.debugLog("loadValue():: record resolved", { record });
       }
     } catch (error) {
       if (!signal.aborted) {
+        this.options.onError?.(error as TError);
         CacheRecord.reject(record, error as TError);
-        this.debugLog('loadValue():: record rejected', { record });
+        this.debugLog("loadValue():: record rejected", { record });
       }
     } finally {
       if (!signal.aborted) {
-        this.debugLog('loadValue():: notifying subscribers');
+        this.debugLog("loadValue():: notifying subscribers");
         this.notifySubscribers(cacheKey);
       }
     }
@@ -125,17 +148,26 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     const cacheKey = this.options.getKey(...args);
     let record = this.recordCache.get(cacheKey);
     if (record) {
-      this.debugLog('invalidate():: record found', { cacheKey, record });
+      this.debugLog("invalidate():: record found", { cacheKey, record });
       if (CacheRecord.isPending(record) || CacheRecord.isRevalidating(record)) {
-        this.debugLog('invalidate():: aborting', { cacheKey, record });
+        this.debugLog("invalidate():: aborting", { cacheKey, record });
         record.data.controller.abort();
       }
 
-      if (CacheRecord.isResolved(record) || CacheRecord.isRevalidating(record)) {
-        this.debugLog('invalidate():: transitioning to revalidating', { cacheKey, record });
+      if (
+        CacheRecord.isResolved(record) ||
+        CacheRecord.isRevalidating(record)
+      ) {
+        this.debugLog("invalidate():: transitioning to revalidating", {
+          cacheKey,
+          record,
+        });
         CacheRecord.revalidate(record);
       } else {
-        this.debugLog('invalidate():: transitioning to pending', { cacheKey, record });
+        this.debugLog("invalidate():: transitioning to pending", {
+          cacheKey,
+          record,
+        });
         CacheRecord.pend(record);
       }
 
@@ -151,17 +183,29 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     this.recordCache.forEach((record, cacheKey) => {
       const args = this.invalidationArgs.get(cacheKey);
       if (args) {
-        this.debugLog('invalidateAll():: record found', { cacheKey, record });
-        if (CacheRecord.isPending(record) || CacheRecord.isRevalidating(record)) {
-          this.debugLog('invalidateAll():: aborting', { cacheKey, record });
+        this.debugLog("invalidateAll():: record found", { cacheKey, record });
+        if (
+          CacheRecord.isPending(record) ||
+          CacheRecord.isRevalidating(record)
+        ) {
+          this.debugLog("invalidateAll():: aborting", { cacheKey, record });
           record.data.controller.abort();
         }
 
-        if (CacheRecord.isResolved(record) || CacheRecord.isRevalidating(record)) {
-          this.debugLog('invalidateAll():: transitioning to revalidating', { cacheKey, record });
+        if (
+          CacheRecord.isResolved(record) ||
+          CacheRecord.isRevalidating(record)
+        ) {
+          this.debugLog("invalidateAll():: transitioning to revalidating", {
+            cacheKey,
+            record,
+          });
           CacheRecord.revalidate(record);
         } else {
-          this.debugLog('invalidateAll():: transitioning to pending', { cacheKey, record });
+          this.debugLog("invalidateAll():: transitioning to pending", {
+            cacheKey,
+            record,
+          });
           CacheRecord.pend(record);
         }
 
@@ -176,7 +220,7 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     const cacheKey = this.options.getKey(...args);
     const record = this.recordCache.get(cacheKey);
 
-    this.debugLog('peek()::', { cacheKey, record });
+    this.debugLog("peek()::", { cacheKey, record });
 
     if (record) {
       if (CacheRecord.isResolved(record)) {
@@ -200,7 +244,7 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
   getStatus<Key extends TParams>(...args: Key): CacheStatus {
     const cacheKey = this.options.getKey(...args);
     const status = this.getStatusInternal(cacheKey);
-    this.debugLog('getStatus()::', { cacheKey, status });
+    this.debugLog("getStatus()::", { cacheKey, status });
     return status;
   }
 
@@ -227,7 +271,7 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
 
   get<Key extends TParams>(...args: Key): PromiseLike<TValue> | TValue {
     const record = this.getOrCreateRecord(...args);
-    this.debugLog('get()::', { args, record });
+    this.debugLog("get()::", { args, record });
     if (CacheRecord.isPending(record)) {
       return record.data.value.promise;
     }
@@ -249,7 +293,7 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
    */
   set<Key extends TParams>(value: TValue, ...args: Key): void {
     const cacheKey = this.options.getKey(...args);
-    this.debugLog('set():: creating', { cacheKey, value });
+    this.debugLog("set():: creating", { cacheKey, value });
     this.recordCache.set(cacheKey, CacheRecord.makeResolved(value));
     this.invalidationArgs.set(cacheKey, args);
     this.notifySubscribers(cacheKey);
@@ -267,7 +311,7 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     this.recordCache.clear();
     this.invalidationArgs.clear();
     this.subscriberMap.forEach((set) =>
-      set.forEach((subscriber) => subscriber(CacheStatus.MISSING)),
+      set.forEach((subscriber) => subscriber(CacheStatus.MISSING))
     );
   }
 
@@ -284,7 +328,10 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
     return deleted;
   }
 
-  deleteIf<Key extends TParams>(predicate: (value: CacheStatus) => boolean, ...args: Key): boolean {
+  deleteIf<Key extends TParams>(
+    predicate: (value: CacheStatus) => boolean,
+    ...args: Key
+  ): boolean {
     if (predicate(this.getStatus(...args))) {
       return this.delete(...args);
     }
@@ -315,7 +362,9 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
    * and re-renders the component when the status changes.
    * This will not suspend the component nor will it throw an error.
    */
-  useValue<Key extends TParams>(...args: Key): CacheValueResult<TError, TValue> {
+  useValue<Key extends TParams>(
+    ...args: Key
+  ): CacheValueResult<TError, TValue> {
     const cache = this;
     const status = cache.useStatus(...args);
 
@@ -332,9 +381,17 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
       // but the result of peek will match the status type
       const value = cache.peek(...args);
       if (value) {
-        return [status as typeof CacheStatus.RESOLVED | typeof CacheStatus.REVALIDATING, value];
+        return [
+          status as
+            | typeof CacheStatus.RESOLVED
+            | typeof CacheStatus.REVALIDATING,
+          value,
+        ];
       }
-      return [status as typeof CacheStatus.MISSING | typeof CacheStatus.PENDING, undefined];
+      return [
+        status as typeof CacheStatus.MISSING | typeof CacheStatus.PENDING,
+        undefined,
+      ];
     } catch (err) {
       return [status as typeof CacheStatus.REJECTED, err as TError];
     }
@@ -378,7 +435,10 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
   abort<Key extends TParams>(...args: Key): boolean {
     const cacheKey = this.options.getKey(...args);
     const record = this.recordCache.get(cacheKey);
-    if (record && (CacheRecord.isPending(record) || CacheRecord.isRevalidating(record))) {
+    if (
+      record &&
+      (CacheRecord.isPending(record) || CacheRecord.isRevalidating(record))
+    ) {
       record.data.controller.abort();
       if (CacheRecord.isPending(record)) {
         return this.delete(...args);
@@ -394,11 +454,15 @@ export class SuspenseCache<TParams extends any[], TError, TValue> {
 }
 
 export function cache<TParams extends any[], TError, TValue>(
-  load: (cacheLoadContext: CacheLoadContext, ...args: TParams) => PromiseLike<TValue> | TValue,
-  options?: Partial<Omit<SuspenseCacheOptions<TParams, TError, TValue>, 'load'>>,
+  load: (
+    cacheLoadContext: CacheLoadContext,
+    ...args: TParams
+  ) => PromiseLike<TValue> | TValue,
+  options?: Partial<Omit<SuspenseCacheOptions<TParams, TError, TValue>, "load">>
 ): SuspenseCache<TParams, TError, TValue> {
   return new SuspenseCache({
-    getKey: (...args: TParams) => args.join(','),
+    getKey: (...args: TParams) =>
+      args.map((x) => JSON.stringify(x)).join(cacheKeyDelimiter),
     getCache: () => new Map(),
     debug: false,
     ...options,
@@ -418,7 +482,7 @@ export interface SuspenseResourceCache<
   },
   TResourceValues extends {
     [key in keyof TResource]: Awaited<ReturnType<TResource[key]>>;
-  },
+  }
 > extends SuspenseCache<
     any,
     TResourceErrors[keyof TResource],
@@ -482,7 +546,10 @@ export interface SuspenseResourceCache<
   useValue<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
-  ): CacheValueResult<TResourceErrors[TResourceKey], TResourceValues[TResourceKey]>;
+  ): CacheValueResult<
+    TResourceErrors[TResourceKey],
+    TResourceValues[TResourceKey]
+  >;
 
   useStatus<TResourceKey extends keyof TResource>(
     key: TResourceKey,
@@ -515,7 +582,7 @@ export function cacheResource<
   },
   TResourceValues extends {
     [key in keyof TResource]: Awaited<ReturnType<TResource[key]>>;
-  },
+  }
 >(
   resource: TResource,
   options?: Partial<
@@ -525,14 +592,19 @@ export function cacheResource<
         TResourceErrors[keyof TResource],
         TResourceValues[keyof TResource]
       >,
-      'load' | 'getKey'
+      "load" | "getKey"
     > & {
       getKey: {
         [key in keyof TResource]: (...args: TResourceParams[key]) => string;
       };
     }
-  >,
-): SuspenseResourceCache<TResource, TResourceParams, TResourceErrors, TResourceValues> {
+  >
+): SuspenseResourceCache<
+  TResource,
+  TResourceParams,
+  TResourceErrors,
+  TResourceValues
+> {
   const getKey = options?.getKey;
   return new SuspenseCache<
     [keyof TResource, ...TResourceParams[keyof TResource]],
@@ -541,19 +613,26 @@ export function cacheResource<
   >({
     getCache: () => new Map(),
     debug: false,
-    debugLabel: `resource(${Object.keys(resource).join(',')})`,
+    debugLabel: `resource(${Object.keys(resource).join(",")})`,
     ...options,
     getKey: (...args) => {
       const [method, ...rest] = args;
       const methodGetKey = getKey?.[method];
       const key = methodGetKey
         ? methodGetKey(...(rest as TResourceParams[keyof TResource]))
-        : rest.join(',');
-      return `${typeof method !== 'string' ? method.toString() : method}:${key}`;
+        : rest.join(cacheKeyDelimiter);
+      return `${
+        typeof method !== "string" ? method.toString() : method
+      }:${key}`;
     },
     load: (cacheLoadContext, ...args) => {
       const [method, ...rest] = args;
       return resource[method](cacheLoadContext, ...rest);
     },
-  }) as SuspenseResourceCache<TResource, TResourceParams, TResourceErrors, TResourceValues>;
+  }) as SuspenseResourceCache<
+    TResource,
+    TResourceParams,
+    TResourceErrors,
+    TResourceValues
+  >;
 }
