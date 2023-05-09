@@ -21,7 +21,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "compile": "tsup",
-    "prepare": "npm run compile && npm run test"
+    "prepare": "npm run compile && npm run test",
+    "release": "changeset publish",
+    "version": "changeset version"
   },
   "author": "Cristian Ramos <hello@cvr.im>",
   "license": "ISC",
