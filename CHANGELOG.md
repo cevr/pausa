@@ -1,5 +1,11 @@
 # pausa
 
+## 0.3.1
+
+### Patch Changes
+
+- a85216c: fix store/storeResource tyypes
+
 ## 0.3.0
 
 ### Minor Changes
