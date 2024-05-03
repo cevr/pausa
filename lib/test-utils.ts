@@ -13,7 +13,7 @@ export class ErrorBoundary extends Component<Props> {
   static getDerivedStateFromError(error: any): State {
     return { errorMessage: typeof error === 'string' ? error : error.message };
   }
-  render() {
+  render(): React.ReactNode | string {
     if (this.state.errorMessage) {
       this.props.onError?.(this.state.errorMessage);
 

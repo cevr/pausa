@@ -1,85 +1,109 @@
+/* eslint-disable no-underscore-dangle */
+/* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable react-hooks/rules-of-hooks */
 /* eslint-disable @typescript-eslint/no-floating-promises */
 import * as React from "react";
 
-import { useForceUpdate } from "./hooks";
-import { CacheRecord, CacheStatus } from "./types";
+import { replaceEqualDeep } from "./internals.js";
+import { CacheRecord, CacheStatus } from "./types.js";
 import type {
   CacheLoadContext,
   CacheMap,
   CacheValueResult,
+  GetLoadParameters,
+  Mutation,
   PendingCacheRecord,
   Resource,
-  ResourceParameters,
-  RevalidatingCacheRecord,
-  SubscribeCallback,
+  ResourceParams,
+  ResourceValues,
+  SuspenseCacheEvent,
   SuspenseCacheOptions,
   UnsubscribeFromCacheStatusFunction,
-} from "./types";
-import { cacheKeyDelimiter, isPromiseLike } from "./utils";
+} from "./types.js";
+import { makeKey } from "./utils.js";
 
-// this acts as a cache for the results of the fetchValue function
-// with the key being the args passed to the fetchValue function
-export class SuspenseCache<
-  TParams extends any[] = any[],
-  TError = unknown,
-  TValue = unknown
-> {
-  private recordCache: CacheMap<string, CacheRecord<TError, TValue>>;
+export class SuspenseCache<TParams extends any[], TValue> {
+  private recordMap: CacheMap<string, CacheRecord<TValue>>;
   // this is used to store the args for a given cache key after a load has been triggered
   // to be used when invalidateAll is called
   // it will be synced with the recordCache when a record is evicted so that it doesn't grow unbounded
-  private invalidationArgs: Map<string, TParams> = new Map();
+  private reverseKeyMap: Map<string, TParams> = new Map();
+  private subscribers = new Set<
+    (args: TParams, status: CacheStatus | null) => void
+  >();
 
-  private subscriberMap = new Map<string, Set<SubscribeCallback>>();
+  // the mutation map keeps track of all the mutations that are currently in flight
+  // it's used to prevent the cache from being overwritten by a stale mutation
+  // so latest mutations are always the ones that are applied
+  private mutationMap = new Map<string, AbortController>();
 
-  debugLog: (...args: any[]) => void;
+  private eventLog: SuspenseCacheEvent[] = [];
 
-  constructor(private options: SuspenseCacheOptions<TParams, TError, TValue>) {
-    this.recordCache = this.options.getCache(this.onExternalEviction);
-    this.debugLog = (...args: any[]) => {
+  logEvent: (event: SuspenseCacheEvent) => void;
+
+  options: SuspenseCacheOptions<TParams, TValue>;
+
+  constructor(options: SuspenseCacheOptions<TParams, TValue>) {
+    this.recordMap = options.getCache(this.onExternalEviction);
+    this.options = options;
+    this.logEvent = (event: SuspenseCacheEvent) => {
       if (this.options.debug) {
         // eslint-disable-next-line no-console
-        console.log(
-          `SuspenseCache(${this.options.debugLabel ?? this.options.load.name})`,
-          ...args
-        );
+        console.log(this.options.name ?? this.options.load.name, event);
+
+        if (this.options.devtools) {
+          this.eventLog.push(event);
+        }
       }
     };
   }
 
   // this is called if the cache eviction policy is not controlled by this cache (provided by the getCache option)
   private onExternalEviction = (key: string): void => {
-    this.invalidationArgs.delete(key);
-    const subscribers = this.subscriberMap.get(key);
-    if (subscribers) {
-      subscribers.forEach((subscriber) => subscriber(CacheStatus.MISSING));
+    const args = this.reverseKeyMap.get(key);
+    this.reverseKeyMap.delete(key);
+    this.logEvent({
+      type: "evict",
+      key,
+      args: args as any,
+    });
+    // const subscribers = this.subscriberMap.get(key);
+    if (args) {
+      React.startTransition(() => {
+        this.subscribers.forEach((sub) => sub(args, null));
+      });
     }
   };
 
-  private getOrCreateRecord(...args: TParams): CacheRecord<TError, TValue> {
-    const cacheKey = this.options.getKey(...args);
+  private getOrCreateRecord(...args: TParams): CacheRecord<TValue> {
+    const cacheKey = this.options.getKey(args);
 
-    let record = this.recordCache.get(cacheKey);
+    let record = this.recordMap.get(cacheKey);
 
     if (!record) {
       record = CacheRecord.makePending();
 
-      this.debugLog("getOrCreateRecord():: record created", {
-        cacheKey,
-        record,
+      this.logEvent({
+        type: "pending",
+        key: cacheKey,
+        args,
       });
 
-      this.recordCache.set(cacheKey, record);
+      this.recordMap.set(cacheKey, record);
 
-      this.notifySubscribers(cacheKey);
+      this.notifySubscribers(args, record);
 
       this.loadValue(cacheKey, record, ...args);
-    } else {
-      this.debugLog("getOrCreateRecord():: record returned", {
-        cacheKey,
-        record,
-      });
+    }
+    if (CacheRecord.isResolved(record)) {
+      const now = Date.now();
+      const ttl =
+        (this.options.ttl instanceof Function
+          ? this.options.ttl(args, record.data.value)
+          : this.options.ttl) ?? Infinity;
+      if (ttl === 0 || now - record.data.createdAt > ttl) {
+        this.invalidate(...args);
+      }
     }
 
     return record;
@@ -87,56 +111,66 @@ export class SuspenseCache<
 
   private async loadValue(
     cacheKey: string,
-    record:
-      | PendingCacheRecord<TError, TValue>
-      | RevalidatingCacheRecord<TError, TValue>,
+    record: PendingCacheRecord<TValue>,
     ...args: TParams
   ): Promise<void> {
-    this.invalidationArgs.set(cacheKey, args);
+    this.reverseKeyMap.set(cacheKey, args);
     const signal = record.data.controller.signal;
-    try {
-      const valueOrPromise = this.options.load(record.data.controller, ...args);
-      const value = isPromiseLike(valueOrPromise)
-        ? await valueOrPromise
-        : valueOrPromise;
-      this.debugLog("loadValue():: value resolved", {
-        value,
-        record,
-        aborted: signal.aborted,
+    const promise = this.options
+      .load(record.data.controller, ...args)
+      .then((v) => {
+        if (record.data.lastValue) {
+          return replaceEqualDeep(record.data.lastValue, v);
+        }
+        return v;
       });
+    try {
+      const value = await promise;
 
       if (!signal.aborted) {
-        this.options.onSuccess?.(value);
-        CacheRecord.resolve(record, value);
-        this.debugLog("loadValue():: record resolved", { record });
+        CacheRecord.resolve(
+          record,
+          value,
+          // react `use` hooks expect a promise at all times
+          // so we just store the resolved promise at all times
+          promise
+        );
+        this.logEvent({
+          type: "resolve",
+          key: cacheKey,
+          args,
+          value,
+        });
+        this.options.onSuccess?.(args, value);
+        this.notifySubscribers(args, record);
       }
     } catch (error) {
       if (!signal.aborted) {
-        this.options.onError?.(error as TError);
-        CacheRecord.reject(record, error as TError);
-        this.debugLog("loadValue():: record rejected", { record });
-      }
-    } finally {
-      if (!signal.aborted) {
-        this.debugLog("loadValue():: notifying subscribers");
-        this.notifySubscribers(cacheKey);
+        CacheRecord.reject(record, error, promise);
+        this.logEvent({
+          type: "reject",
+          key: cacheKey,
+          args,
+          error,
+        });
+        this.options.onError?.(args, error);
+        this.notifySubscribers(args, record);
       }
     }
   }
 
-  private notifySubscribers(cacheKey: string): void {
-    const subscribers = this.subscriberMap.get(cacheKey);
-    if (subscribers) {
-      const status = this.getStatusInternal(cacheKey);
-      subscribers.forEach((subscriber) => subscriber(status));
+  private notifySubscribers(
+    args: TParams,
+    record: CacheRecord<TValue> | null
+  ): void {
+    // const subscribers = this.subscriberMap.get(cacheKey);
+    if (args) {
+      React.startTransition(() => {
+        this.subscribers.forEach((subscriber) =>
+          subscriber(args, record?.data?.status ?? null)
+        );
+      });
     }
-  }
-
-  // this is used by our private methods so to not calculate the cacheKey more than once
-  private getStatusInternal(cacheKey: string): CacheStatus {
-    const record = this.recordCache.get(cacheKey);
-    const status = record?.data.status ?? CacheStatus.MISSING;
-    return status;
   }
 
   /**
@@ -144,95 +178,86 @@ export class SuspenseCache<
    * If the cache entry is resolved or rejected, it will attempt to re-fetch the value.
    * If the cache entry does not exist, it will be created.
    */
-  invalidate<Key extends TParams>(...args: Key): void {
-    const cacheKey = this.options.getKey(...args);
-    let record = this.recordCache.get(cacheKey);
+  invalidate<Key extends TParams>(...args: Key): Promise<TValue> {
+    const cacheKey = this.options.getKey(args);
+    let record = this.recordMap.get(cacheKey);
     if (record) {
-      this.debugLog("invalidate():: record found", { cacheKey, record });
-      if (CacheRecord.isPending(record) || CacheRecord.isRevalidating(record)) {
-        this.debugLog("invalidate():: aborting", { cacheKey, record });
+      this.logEvent({
+        type: "invalidate",
+        key: cacheKey,
+        args,
+      });
+
+      if (CacheRecord.isPending(record)) {
+        this.logEvent({
+          type: "abort",
+          key: cacheKey,
+          args,
+        });
         record.data.controller.abort();
       }
 
-      if (
-        CacheRecord.isResolved(record) ||
-        CacheRecord.isRevalidating(record)
-      ) {
-        this.debugLog("invalidate():: transitioning to revalidating", {
-          cacheKey,
-          record,
-        });
-        CacheRecord.revalidate(record);
-      } else {
-        this.debugLog("invalidate():: transitioning to pending", {
-          cacheKey,
-          record,
-        });
-        CacheRecord.pend(record);
-      }
+      CacheRecord.pend(record);
 
-      this.notifySubscribers(cacheKey);
+      this.notifySubscribers(args, record);
 
       this.loadValue(cacheKey, record, ...args);
     } else {
       this.getOrCreateRecord(...args);
     }
+    return this.get(...args);
   }
 
-  invalidateAll(): void {
-    this.recordCache.forEach((record, cacheKey) => {
-      const args = this.invalidationArgs.get(cacheKey);
-      if (args) {
-        this.debugLog("invalidateAll():: record found", { cacheKey, record });
-        if (
-          CacheRecord.isPending(record) ||
-          CacheRecord.isRevalidating(record)
-        ) {
-          this.debugLog("invalidateAll():: aborting", { cacheKey, record });
+  private invalidateBatch(keys: TParams[]): void {
+    let records: [TParams, CacheRecord<TValue>][] = [];
+    keys.forEach((args) => {
+      const cacheKey = this.options.getKey(args);
+      let record = this.recordMap.get(cacheKey);
+      if (record) {
+        if (CacheRecord.isPending(record)) {
           record.data.controller.abort();
         }
-
-        if (
-          CacheRecord.isResolved(record) ||
-          CacheRecord.isRevalidating(record)
-        ) {
-          this.debugLog("invalidateAll():: transitioning to revalidating", {
-            cacheKey,
-            record,
-          });
-          CacheRecord.revalidate(record);
-        } else {
-          this.debugLog("invalidateAll():: transitioning to pending", {
-            cacheKey,
-            record,
-          });
-          CacheRecord.pend(record);
-        }
-
-        this.notifySubscribers(cacheKey);
-
+        CacheRecord.pend(record);
         this.loadValue(cacheKey, record, ...args);
+      } else {
+        this.getOrCreateRecord(...args);
       }
+      records.push([args, this.recordMap.get(cacheKey)!]);
+    });
+    records.forEach(([args, record]) => {
+      this.notifySubscribers(args, record);
     });
   }
 
-  peek<Key extends TParams>(...args: Key): TValue | undefined {
-    const cacheKey = this.options.getKey(...args);
-    const record = this.recordCache.get(cacheKey);
+  invalidateAll(): void {
+    const keys = Array.from(this.reverseKeyMap.values());
+    this.invalidateBatch(keys);
+  }
 
-    this.debugLog("peek()::", { cacheKey, record });
+  invalidateMatching(predicate: (args: TParams) => boolean): void {
+    let keysToInvalidate: TParams[] = [];
+    this.reverseKeyMap.forEach((args) => {
+      if (predicate(args)) {
+        keysToInvalidate.push(args);
+      }
+    });
+    this.invalidateBatch(keysToInvalidate);
+  }
+
+  peek<Key extends TParams>(...args: Key): TValue | undefined {
+    const cacheKey = this.options.getKey(args);
+    const record = this.recordMap.get(cacheKey);
 
     if (record) {
       if (CacheRecord.isResolved(record)) {
         return record.data.value;
       }
 
-      if (CacheRecord.isRevalidating(record)) {
-        return record.data.cached;
-      }
-
       if (CacheRecord.isRejected(record)) {
         throw record.data.error;
+      }
+      if (record.data.lastValue) {
+        return record.data.lastValue;
       }
     }
   }
@@ -241,173 +266,194 @@ export class SuspenseCache<
    * Attempts to get the status of the cache entry for the given args.
    * Will return undefined if the cache entry does not exist.
    */
-  getStatus<Key extends TParams>(...args: Key): CacheStatus {
-    const cacheKey = this.options.getKey(...args);
-    const status = this.getStatusInternal(cacheKey);
-    this.debugLog("getStatus()::", { cacheKey, status });
+  getStatus<Key extends TParams>(...args: Key): CacheStatus | undefined {
+    const cacheKey = this.options.getKey(args);
+    const status = this.recordMap.get(cacheKey)?.data.status;
+
     return status;
   }
 
-  subscribeToStatus<Key extends TParams>(
-    callback: SubscribeCallback,
-    ...args: Key
+  subscribe(
+    callback: (args: TParams, status: CacheStatus | null) => void
+  ): UnsubscribeFromCacheStatusFunction;
+  subscribe<Key extends TParams>(
+    args: Key,
+    callback: (status: CacheStatus | null) => void
+  ): UnsubscribeFromCacheStatusFunction;
+  subscribe<Key extends TParams>(
+    maybeArgs: Key | ((args: TParams, status: CacheStatus | null) => void),
+    callback?: (status: CacheStatus | null) => void
   ): UnsubscribeFromCacheStatusFunction {
-    const cacheKey = this.options.getKey(...args);
-    let set = this.subscriberMap.get(cacheKey);
-    if (set) {
-      set.add(callback);
-    } else {
-      set = new Set([callback]);
-      this.subscriberMap.set(cacheKey, set);
+    if (maybeArgs instanceof Function) {
+      this.subscribers.add(maybeArgs);
+      return () => {
+        this.subscribers.delete(maybeArgs);
+      };
     }
 
-    return () => {
-      set!.delete(callback);
-      if (set!.size === 0) {
-        this.subscriberMap.delete(cacheKey);
+    const listenKey = this.options.getKey(maybeArgs);
+
+    const cb = (args: TParams, status: CacheStatus | null): void => {
+      const updatedKey = this.options.getKey(args);
+
+      if (updatedKey === listenKey) {
+        callback!(status);
       }
+    };
+
+    this.subscribers.add(cb);
+
+    return () => {
+      this.subscribers.delete(cb);
     };
   }
 
-  get<Key extends TParams>(...args: Key): PromiseLike<TValue> | TValue {
+  get<Key extends TParams>(...args: Key): Promise<TValue> {
     const record = this.getOrCreateRecord(...args);
-    this.debugLog("get()::", { args, record });
+
     if (CacheRecord.isPending(record)) {
       return record.data.value.promise;
     }
-    if (CacheRecord.isRevalidating(record)) {
-      return record.data.cached;
-    }
+
     if (CacheRecord.isResolved(record)) {
-      return record.data.value;
+      return record.data.promise;
     }
 
-    throw record.data.error;
+    return record.data.promise;
   }
 
   /**
    * Sets the cache entry for the given args to the given value.
-   * This will not trigger any subscribers.
    * This will not attempt to re-fetch the value.
    * This will not invalidate any other cache entries.
    */
-  set<Key extends TParams>(value: TValue, ...args: Key): void {
-    const cacheKey = this.options.getKey(...args);
-    this.debugLog("set():: creating", { cacheKey, value });
-    this.recordCache.set(cacheKey, CacheRecord.makeResolved(value));
-    this.invalidationArgs.set(cacheKey, args);
-    this.notifySubscribers(cacheKey);
+  set(
+    value: TParams extends [any, ...any[]]
+      ? "Set shorthand is only supported for no-arg caches"
+      : TValue
+  ): void;
+  set<Key extends TParams>(key: Key, value: TValue): void;
+  set<Key extends TParams>(keyOrValue: Key | TValue, value?: TValue): void {
+    if (value === undefined) {
+      value = keyOrValue as TValue;
+    }
+    const key = Array.isArray(keyOrValue) ? keyOrValue : ([] as unknown as Key);
+    const cacheKey = this.options.getKey(key);
+    let currentRecord = this.recordMap.get(cacheKey);
+    if (currentRecord && CacheRecord.isPending(currentRecord)) {
+      currentRecord.data.controller.abort();
+    }
+    let nextValue = value;
+    if (currentRecord) {
+      if (CacheRecord.isResolved(currentRecord)) {
+        nextValue = replaceEqualDeep(currentRecord.data.value, value);
+      } else if (CacheRecord.isPending(currentRecord)) {
+        nextValue = replaceEqualDeep(currentRecord.data.lastValue, value);
+      }
+    }
+    if (!currentRecord) {
+      currentRecord = CacheRecord.makeResolved(nextValue);
+      this.recordMap.set(cacheKey, currentRecord);
+    } else {
+      CacheRecord.resolve(currentRecord, nextValue, Promise.resolve(nextValue));
+    }
+    this.logEvent({
+      type: "set",
+      key: cacheKey,
+      args: key,
+      lastValue: (currentRecord.data as any).lastValue,
+      value: nextValue,
+    });
+    this.reverseKeyMap.set(cacheKey, key);
+    // we want to wrap this in a transition so React's minimum suspense duration heurestics are skipped
+    // this would happen if we set a value that was pending and then immediately read it
+    this.notifySubscribers(key, currentRecord);
   }
 
   has<Key extends TParams>(...args: Key): boolean {
-    const cacheKey = this.options.getKey(...args);
-    return this.recordCache.has(cacheKey);
+    const cacheKey = this.options.getKey(args);
+    return this.recordMap.has(cacheKey);
   }
 
   /**
    * Clears the entire cache. Will notify subscribers.
    */
   clear(): void {
-    this.recordCache.clear();
-    this.invalidationArgs.clear();
-    this.subscriberMap.forEach((set) =>
-      set.forEach((subscriber) => subscriber(CacheStatus.MISSING))
-    );
+    this.recordMap.clear();
+    this.reverseKeyMap.forEach((args) => {
+      this.abort(...args);
+      React.startTransition(() => {
+        this.subscribers.forEach((sub) => sub(args, null));
+      });
+    });
+    this.reverseKeyMap.clear();
+    this.subscribers.clear();
   }
 
   /**
    * Removes the cache entry for the given args.
    */
   delete<Key extends TParams>(...args: Key): boolean {
-    const cacheKey = this.options.getKey(...args);
-    const deleted = this.recordCache.delete(cacheKey);
-    if (deleted) {
-      this.invalidationArgs.delete(cacheKey);
-      this.notifySubscribers(cacheKey);
-    }
+    const cacheKey = this.options.getKey(args);
+    const deleted = this.recordMap.delete(cacheKey);
+    this.abort(...args);
+    this.reverseKeyMap.delete(cacheKey);
+    this.notifySubscribers(args, null);
     return deleted;
   }
 
-  deleteIf<Key extends TParams>(
-    predicate: (value: CacheStatus) => boolean,
-    ...args: Key
-  ): boolean {
-    if (predicate(this.getStatus(...args))) {
-      return this.delete(...args);
-    }
-    return false;
+  private deleteBatch(keys: TParams[]): void {
+    const deletedSet = keys.filter((args) => {
+      const cacheKey = this.options.getKey(args);
+      const deleted = this.recordMap.delete(cacheKey);
+      if (deleted) {
+        this.abort(...args);
+        this.reverseKeyMap.delete(cacheKey);
+      }
+      return deleted;
+    });
+    deletedSet.forEach((args) => {
+      this.notifySubscribers(args, null);
+    });
+  }
+
+  deleteMatching(predicate: (args: TParams) => boolean): void {
+    const keysToDelete: TParams[] = [];
+    this.reverseKeyMap.forEach((args) => {
+      if (predicate(args)) {
+        keysToDelete.push(args);
+      }
+    });
+    this.deleteBatch(keysToDelete);
   }
 
   // this will suspend if the value is not yet resolved
   // so it will always return a value or throw to the nearest error boundary
-  suspend<Key extends TParams>(...args: Key): TValue {
+  private read<Key extends TParams>(...args: Key): TValue {
     const record = this.getOrCreateRecord(...args);
     if (CacheRecord.isResolved(record)) {
       return record.data.value;
-    }
-
-    if (CacheRecord.isRevalidating(record)) {
-      return record.data.cached;
     }
 
     if (CacheRecord.isRejected(record)) {
       throw record.data.error;
     }
 
+    if (record.data.lastValue) {
+      // until react 19 - transitions still hit the fallback, we don't want that if we dont have to
+      return record.data.lastValue;
+    }
+
     throw record.data.value.promise;
   }
 
-  /**
-   * Wraps the cache.get method in a react hook that tracks the status of the cache item
-   * and re-renders the component when the status changes.
-   * This will not suspend the component nor will it throw an error.
-   */
-  useValue<Key extends TParams>(
-    ...args: Key
-  ): CacheValueResult<TError, TValue> {
+  useStatus<Key extends TParams>(...args: Key): CacheStatus | undefined {
     const cache = this;
-    const status = cache.useStatus(...args);
 
-    React.useEffect(() => {
-      if (status === CacheStatus.MISSING) {
-        // initiate the fetch if it hasn't already been initiated
-        // it is idempotent so it is safe to call multiple times
-        cache.get(...args);
-      }
-    });
-
-    try {
-      // typescript can't infer the status type from the value type
-      // but the result of peek will match the status type
-      const value = cache.peek(...args);
-      if (value) {
-        return [
-          status as
-            | typeof CacheStatus.RESOLVED
-            | typeof CacheStatus.REVALIDATING,
-          value,
-        ];
-      }
-      return [
-        status as typeof CacheStatus.MISSING | typeof CacheStatus.PENDING,
-        undefined,
-      ];
-    } catch (err) {
-      return [status as typeof CacheStatus.REJECTED, err as TError];
-    }
-  }
-
-  useStatus<Key extends TParams>(...args: Key): CacheStatus {
-    const cache = this;
-    const forceUpdate = useForceUpdate();
-    const status = cache.getStatus(...args);
-
-    React.useEffect(() => {
-      const unsubscribe = cache.subscribeToStatus(forceUpdate, ...args);
-      return unsubscribe;
-    });
-
-    return status;
+    return React.useSyncExternalStore(
+      React.useCallback((cb) => cache.subscribe(args, cb), args),
+      React.useCallback(() => cache.getStatus(...args), args)
+    );
   }
 
   /**
@@ -416,81 +462,220 @@ export class SuspenseCache<
    * If the value is in the cache but is stale it will return the stale value and revalidate the value in the background.
    * If the value errors it will throw the error to the nearest error boundary.
    */
-  read<Key extends TParams>(...args: Key): [TValue, boolean] {
-    const cache = this;
-    const value = cache.suspend(...args);
-    // we use this to track the status of the cache item to know if it needs to be re-rendered
-    const status = cache.useStatus(...args);
+  use<Key extends TParams>(...args: Key): TValue {
+    // todo: once react 19 is out, we can use `React.use`
+    return this.useSynced(...args);
+  }
 
-    return [value, status === CacheStatus.REVALIDATING];
+  /**
+   * This hook is the same as use, but will skip transitions
+   */
+  useSynced<Key extends TParams>(...args: Key): TValue {
+    return React.useSyncExternalStore(
+      React.useCallback((cb) => this.subscribe(args, cb), args),
+      React.useCallback(() => this.read(...args), args)
+    );
   }
 
   /**
    * This will prime the cache with a value that will be read elsewhere.
    */
   preload<Key extends TParams>(...args: Key): void {
-    this.get(...args);
+    const record = this.getOrCreateRecord(...args);
+    if (CacheRecord.isRejected(record)) {
+      this.invalidate(...args);
+    }
+    // otherwise the record is already pending or resolved and we don't need to do anything
   }
 
   abort<Key extends TParams>(...args: Key): boolean {
-    const cacheKey = this.options.getKey(...args);
-    const record = this.recordCache.get(cacheKey);
-    if (
-      record &&
-      (CacheRecord.isPending(record) || CacheRecord.isRevalidating(record))
-    ) {
+    const cacheKey = this.options.getKey(args);
+    const record = this.recordMap.get(cacheKey);
+    if (record && CacheRecord.isPending(record)) {
       record.data.controller.abort();
       if (CacheRecord.isPending(record)) {
         return this.delete(...args);
       }
-
-      if (CacheRecord.isRevalidating(record)) {
-        this.set(record.data.cached, ...args);
-        return true;
-      }
     }
     return false;
   }
+
+  useSelector<Key extends TParams, TSelected>(
+    key: Key,
+    selector: (value: TValue) => TSelected
+  ): TSelected {
+    return React.useSyncExternalStore(
+      React.useCallback((cb) => this.subscribe(key, cb), key),
+      React.useCallback(() => selector(this.read(...key)), [...key, selector])
+    );
+  }
+
+  async mutate<
+    Key extends TParams,
+    Res extends TValue | undefined | null | void
+  >(
+    key: Key,
+    mutator: (opts: { signal: AbortSignal }) => Promise<Res>,
+    options?: {
+      optimisticData?: TValue;
+      onError?: (error: unknown) => void;
+      onSuccess?: (value: Res) => void;
+    }
+  ): Promise<Res | void> {
+    const cache = this;
+
+    const keyString = this.options.getKey(key);
+    const currentMutation = this.mutationMap.get(keyString);
+    if (currentMutation) {
+      currentMutation.abort();
+    }
+    const controller = new AbortController();
+    this.mutationMap.set(keyString, controller);
+
+    if (options?.optimisticData) {
+      cache.set(key, options?.optimisticData);
+    }
+    return mutator({ signal: controller.signal })
+      .then((res) => {
+        if (!controller.signal.aborted) {
+          if (res !== null && res !== undefined) {
+            cache.set(key, res as TValue);
+          } else {
+            cache.invalidate(...key);
+          }
+          options?.onSuccess?.(res);
+          this.mutationMap.delete(keyString);
+          return res;
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          cache.invalidate(...key);
+          options?.onError?.(err);
+          this.mutationMap.delete(keyString);
+          throw err;
+        }
+      });
+  }
+
+  useMutation<
+    MutationParams extends any[],
+    Res extends TValue | undefined | null | void
+  >(
+    key: TParams,
+    mutator: (
+      {
+        signal,
+      }: {
+        signal: AbortSignal;
+      },
+      ...args: MutationParams
+    ) => Promise<Res>,
+    options?: {
+      optimisticData?: TValue | ((...args: MutationParams) => TValue);
+      onError?: (error: unknown, ...args: MutationParams) => void;
+      onSuccess?: (value: Res, ...args: MutationParams) => void;
+      resetDelay?: number;
+    }
+  ): Mutation<(...args: MutationParams) => Promise<Res | void>> {
+    const cache = this;
+    const [isPending, setIsPending] = React.useState(false);
+
+    const trigger = React.useCallback(
+      async (...args: MutationParams) => {
+        setIsPending(true);
+        return cache
+          .mutate(key, (opts) => mutator(opts, ...args), {
+            optimisticData:
+              options?.optimisticData instanceof Function
+                ? options.optimisticData(...args)
+                : options?.optimisticData,
+            onError: (error) => options?.onError?.(error, ...args),
+            onSuccess: (value) => options?.onSuccess?.(value, ...args),
+          })
+          .finally(() => {
+            setIsPending(false);
+          });
+      },
+      [mutator, options, setIsPending, key, cache]
+    );
+    return React.useMemo(() => [trigger, isPending], [trigger, isPending]);
+  }
+
+  useImperativeValue(...args: TParams): CacheValueResult<TValue> {
+    const record = React.useSyncExternalStore(
+      React.useCallback((cb) => this.subscribe(args, cb), args),
+      React.useCallback(() => {
+        const r = this.getOrCreateRecord(...args);
+        return r.data;
+      }, args)
+    );
+    if (
+      record.status === CacheStatus.PENDING &&
+      record.lastValue === undefined
+    ) {
+      return [CacheStatus.PENDING, undefined];
+    }
+
+    if (
+      record.status === CacheStatus.PENDING &&
+      record.lastValue !== undefined
+    ) {
+      return ["revalidating" as const, record.lastValue];
+    }
+
+    if (record.status === CacheStatus.REJECTED) {
+      return [CacheStatus.REJECTED, record.error];
+    }
+
+    return [CacheStatus.RESOLVED, record.value as TValue];
+  }
+
+  logs(): SuspenseCacheEvent[] {
+    return this.eventLog;
+  }
+
+  records(): CacheMap<string, CacheRecord<TValue>> {
+    return this.recordMap;
+  }
 }
 
-export function cache<TParams extends any[], TError, TValue>(
+export function cache<TParams extends any[] = [], TValue = unknown>(
   load: (
     cacheLoadContext: CacheLoadContext,
     ...args: TParams
-  ) => PromiseLike<TValue> | TValue,
-  options?: Partial<Omit<SuspenseCacheOptions<TParams, TError, TValue>, "load">>
-): SuspenseCache<TParams, TError, TValue> {
-  return new SuspenseCache({
-    getKey: (...args: TParams) =>
-      args.map((x) => JSON.stringify(x)).join(cacheKeyDelimiter),
+  ) => Promise<TValue>,
+  options?: Partial<Omit<SuspenseCacheOptions<TParams, TValue>, "load">>
+): SuspenseCache<TParams, TValue> {
+  const name = options?.name ?? `cache(${load.name})`;
+  let c = new SuspenseCache({
+    getKey: makeKey,
     getCache: () => new Map(),
     debug: false,
     ...options,
+    name,
     load,
   });
+
+  return c;
 }
 
 // this is a type that overrides the SuspenseCache while keeping the same interface
 // it's used so we can make caches that have variadic load functions
 export interface SuspenseResourceCache<
   TResource extends Resource,
-  TResourceParams extends {
-    [key in keyof TResource]: ResourceParameters<TResource[key]>;
-  },
-  TResourceErrors extends {
-    [key in keyof TResource]: any;
-  },
-  TResourceValues extends {
-    [key in keyof TResource]: Awaited<ReturnType<TResource[key]>>;
-  }
-> extends SuspenseCache<
-    any,
-    TResourceErrors[keyof TResource],
-    TResourceValues[keyof TResourceValues]
-  > {
+  TResourceParams extends ResourceParams<TResource> = ResourceParams<TResource>,
+  TResourceValues extends ResourceValues<TResource> = ResourceValues<TResource>
+> extends SuspenseCache<any, TResourceValues[keyof TResourceValues]> {
   invalidate<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
+  ): Promise<TResourceValues[TResourceKey]>;
+  invalidateAll(): void;
+  invalidateMatching(
+    predicate: <TResourceKey extends keyof TResource>(
+      args: [TResourceKey, ...TResourceParams[TResourceKey]]
+    ) => boolean
   ): void;
 
   peek<TResourceKey extends keyof TResource>(
@@ -503,21 +688,30 @@ export interface SuspenseResourceCache<
     ...args: TResourceParams[TResourceKey]
   ): CacheStatus;
 
-  subscribeToStatus<TResourceKey extends keyof TResource>(
-    cb: SubscribeCallback,
-    key: TResourceKey,
-    ...args: TResourceParams[TResourceKey]
+  subscribe<TResourceKey extends keyof TResource>(
+    cb: (
+      args: [TResourceKey, ...TResourceParams[TResourceKey]],
+      status: CacheStatus | null
+    ) => void
   ): UnsubscribeFromCacheStatusFunction;
+  subscribe<TResourceKey extends keyof TResource>(
+    key: [TResourceKey, ...TResourceParams[TResourceKey]],
+    cb: (status: CacheStatus | null) => void
+  ): UnsubscribeFromCacheStatusFunction;
+
+  useSubscription<TResourceKey extends keyof TResource>(
+    key: [TResourceKey, ...TResourceParams[TResourceKey]]
+  ): CacheRecord<TResourceValues[TResourceKey]>;
 
   get<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
-  ): PromiseLike<TResourceValues[TResourceKey]> | TResourceValues[TResourceKey];
+  ): Promise<TResourceValues[TResourceKey]>;
 
+  set(value: never): void;
   set<TResourceKey extends keyof TResource>(
-    value: TResourceValues[TResourceKey],
-    key: TResourceKey,
-    ...args: TResourceParams[TResourceKey]
+    key: [TResourceKey, ...TResourceParams[TResourceKey]],
+    value: TResourceValues[TResourceKey]
   ): void;
 
   has<TResourceKey extends keyof TResource>(
@@ -532,34 +726,31 @@ export interface SuspenseResourceCache<
     ...args: TResourceParams[TResourceKey]
   ): boolean;
 
-  deleteIf<TResourceKey extends keyof TResource>(
-    predicate: (status: CacheStatus) => boolean,
-    key: TResourceKey,
-    ...args: TResourceParams[TResourceKey]
-  ): boolean;
-
-  suspend<TResourceKey extends keyof TResource>(
-    key: TResourceKey,
-    ...args: TResourceParams[TResourceKey]
-  ): TResourceValues[TResourceKey];
+  deleteMatching<TResourceKey extends keyof TResource>(
+    predicate: (
+      args: [TResourceKey, ...TResourceParams[TResourceKey]]
+    ) => boolean
+  ): void;
 
   useValue<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
-  ): CacheValueResult<
-    TResourceErrors[TResourceKey],
-    TResourceValues[TResourceKey]
-  >;
+  ): CacheValueResult<TResourceValues[TResourceKey]>;
 
   useStatus<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
   ): CacheStatus;
 
-  read<TResourceKey extends keyof TResource>(
+  use<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
-  ): [TResourceValues[TResourceKey], boolean];
+  ): TResourceValues[TResourceKey];
+
+  useSynced<TResourceKey extends keyof TResource>(
+    key: TResourceKey,
+    ...args: TResourceParams[TResourceKey]
+  ): TResourceValues[TResourceKey];
 
   preload<TResourceKey extends keyof TResource>(
     key: TResourceKey,
@@ -570,17 +761,66 @@ export interface SuspenseResourceCache<
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
   ): boolean;
+
+  useSelector<TResourceKey extends keyof TResource, TSelected>(
+    key: [TResourceKey, ...TResourceParams[TResourceKey]],
+    selector: (value: TResourceValues[TResourceKey]) => TSelected
+  ): TSelected;
+
+  mutate<
+    TResourceKey extends keyof TResource,
+    Res extends TResourceValues[TResourceKey] | undefined | null | void
+  >(
+    key: [TResourceKey, ...TResourceParams[TResourceKey]],
+    mutator: (opts: { signal: AbortSignal }) => Promise<Res>,
+    options?: {
+      optimisticData?: TResourceValues[TResourceKey];
+      onError?: (error: unknown) => void;
+      onSuccess?: (value: Res) => void;
+    }
+  ): Promise<Res>;
+
+  useMutation<
+    TResourceKey extends keyof TResource,
+    MutationParams extends any[],
+    Res extends TResourceValues[TResourceKey] | undefined | null | void
+  >(
+    keys: [TResourceKey, ...TResourceParams[TResourceKey]],
+    mutator: (
+      { signal }: { signal: AbortSignal },
+      ...args: MutationParams
+    ) => Promise<Res>,
+    options?: {
+      optimisticData?:
+        | TResourceValues[TResourceKey]
+        | ((...args: MutationParams) => TResourceValues[TResourceKey]);
+      onError?: (error: unknown, ...args: MutationParams) => void;
+      onSuccess?: (value: Res, ...args: MutationParams) => void;
+      resetDelay?: number;
+    }
+  ): Mutation<(...args: MutationParams) => Promise<Res>>;
+
+  useImperativeValue<TResourceKey extends keyof TResource>(
+    key: TResourceKey,
+    ...args: TResourceParams[TResourceKey]
+  ): CacheValueResult<TResourceValues[TResourceKey]>;
 }
 
 export function cacheResource<
   TResource extends Resource,
   TResourceParams extends {
-    [key in keyof TResource]: ResourceParameters<TResource[key]>;
+    [key in keyof TResource]: GetLoadParameters<TResource[key]>;
+  } = {
+    [key in keyof TResource]: GetLoadParameters<TResource[key]>;
   },
   TResourceErrors extends {
     [key in keyof TResource]: any;
+  } = {
+    [key in keyof TResource]: unknown;
   },
   TResourceValues extends {
+    [key in keyof TResource]: Awaited<ReturnType<TResource[key]>>;
+  } = {
     [key in keyof TResource]: Awaited<ReturnType<TResource[key]>>;
   }
 >(
@@ -589,50 +829,62 @@ export function cacheResource<
     Omit<
       SuspenseCacheOptions<
         TResourceParams[keyof TResource],
-        TResourceErrors[keyof TResource],
         TResourceValues[keyof TResource]
       >,
-      "load" | "getKey"
+      "load" | "getKey" | "onError" | "onSuccess"
     > & {
-      getKey: {
-        [key in keyof TResource]: (...args: TResourceParams[key]) => string;
+      getKey: (
+        args: [keyof TResource, ...TResourceParams[keyof TResource]]
+      ) => string;
+      init?: {
+        [key in keyof TResource]?: TResourceValues[key];
       };
+      onError?: (
+        args: [keyof TResource, ...TResourceParams[keyof TResource]],
+        error: TResourceErrors[keyof TResource]
+      ) => void;
+      onSuccess?: (
+        args: [keyof TResource, ...TResourceParams[keyof TResource]],
+        value: TResourceValues[keyof TResource]
+      ) => void;
     }
   >
-): SuspenseResourceCache<
-  TResource,
-  TResourceParams,
-  TResourceErrors,
-  TResourceValues
-> {
-  const getKey = options?.getKey;
-  return new SuspenseCache<
+): SuspenseResourceCache<TResource, TResourceParams, TResourceValues> {
+  const name = options?.name ?? `resource(${Object.keys(resource).join(":")})`;
+
+  const suspenseCache = new SuspenseCache<
     [keyof TResource, ...TResourceParams[keyof TResource]],
-    TResourceErrors[keyof TResource],
     TResourceValues[keyof TResource]
   >({
     getCache: () => new Map(),
     debug: false,
-    debugLabel: `resource(${Object.keys(resource).join(",")})`,
-    ...options,
-    getKey: (...args) => {
-      const [method, ...rest] = args;
-      const methodGetKey = getKey?.[method];
-      const key = methodGetKey
-        ? methodGetKey(...(rest as TResourceParams[keyof TResource]))
-        : rest.join(cacheKeyDelimiter);
-      return `${
-        typeof method !== "string" ? method.toString() : method
-      }:${key}`;
-    },
+    getKey: makeKey,
+    ...(options as any),
+    name,
     load: (cacheLoadContext, ...args) => {
       const [method, ...rest] = args;
       return resource[method](cacheLoadContext, ...rest);
     },
-  }) as SuspenseResourceCache<
-    TResource,
-    TResourceParams,
-    TResourceErrors,
-    TResourceValues
-  >;
+  }) as SuspenseResourceCache<TResource, TResourceParams, TResourceValues>;
+
+  return suspenseCache;
+}
+
+export function store<TValue>(
+  options?: Partial<Omit<SuspenseCacheOptions<[], TValue>, "load" | "getKey">>
+): SuspenseCache<[], TValue> {
+  return cache(() => new Promise<TValue>(() => {}), options) as any;
+}
+
+export function storeResource<TValue extends Record<string, any>>(
+  options?: Partial<
+    Omit<
+      SuspenseCacheOptions<[keyof TValue], TValue[keyof TValue]>,
+      "load" | "getKey"
+    >
+  >
+): SuspenseResourceCache<{
+  [Key in keyof TValue]: () => Promise<TValue[Key]>;
+}> {
+  return cache(() => new Promise<TValue>(() => {}), options as any) as any;
 }

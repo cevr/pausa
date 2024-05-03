@@ -1,111 +1,77 @@
-import { defer } from "./utils";
-
-export const DeferredStatus = {
-  PENDING: "pending",
-  RESOLVED: "resolved",
-  REJECTED: "rejected",
-} as const;
-
-export type DeferredStatus =
-  (typeof DeferredStatus)[keyof typeof DeferredStatus];
-
-export interface Deferred<Value> {
-  promise: Promise<Value>;
-  status: DeferredStatus;
-  reject(error: any): void;
-  resolve(value?: Value): void;
-}
+import { invariant } from './internals';
+import type { Deferred } from './utils';
+import { defer, DeferredStatus } from './utils';
 
 export const CacheStatus = {
   ...DeferredStatus,
-  REVALIDATING: "revalidating",
-  MISSING: "missing",
 } as const;
 
 export type CacheStatus = (typeof CacheStatus)[keyof typeof CacheStatus];
 
-export type SubscribeCallback = (status: CacheStatus) => void;
 export type UnsubscribeFromCacheStatusFunction = () => void;
 
-export interface RevalidatingCacheRecord<_TError, TValue> {
-  data: {
-    status: typeof CacheStatus.REVALIDATING;
-    value: Deferred<TValue>;
-    controller: AbortController;
-    cached: TValue;
-  };
-}
-
-export interface ResolvedCacheRecord<_TError, TValue> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export interface ResolvedCacheRecord<TValue> {
   data: {
     status: typeof CacheStatus.RESOLVED;
     value: TValue;
+    createdAt: number;
+    promise: Promise<TValue>;
   };
 }
 
-export interface RejectedCacheRecord<TError, _TValue> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export interface RejectedCacheRecord<TValue> {
   data: {
     status: typeof CacheStatus.REJECTED;
-    error: TError;
+    error: unknown;
+    promise: Promise<TValue>;
   };
 }
 
-export interface PendingCacheRecord<_TError, TValue> {
+export interface PendingCacheRecord<TValue> {
   data: {
     status: typeof CacheStatus.PENDING;
     value: Deferred<TValue>;
     controller: AbortController;
+    lastValue?: TValue;
   };
 }
 
-export type CacheRecord<TError, TValue> =
-  | PendingCacheRecord<TError, TValue>
-  | ResolvedCacheRecord<TError, TValue>
-  | RejectedCacheRecord<TError, TValue>
-  | RevalidatingCacheRecord<TError, TValue>;
+export type CacheRecord<TValue> =
+  | PendingCacheRecord<TValue>
+  | ResolvedCacheRecord<TValue>
+  | RejectedCacheRecord<TValue>;
 
 type CacheRecordStatic = {
-  makePending<TError, TValue>(): PendingCacheRecord<TError, TValue>;
-  makeResolved<TError, TValue>(
-    value: TValue
-  ): ResolvedCacheRecord<TError, TValue>;
-  makeRejected<TError, TValue>(
-    error: TError
-  ): RejectedCacheRecord<TError, TValue>;
-  makeRevalidating<TError, TValue>(
-    value: TValue
-  ): RevalidatingCacheRecord<TError, TValue>;
-  isPending<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is PendingCacheRecord<TError, TValue>;
-  isResolved<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is ResolvedCacheRecord<TError, TValue>;
-  isRejected<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is RejectedCacheRecord<TError, TValue>;
-  isRevalidating<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is RevalidatingCacheRecord<TError, TValue>;
-  resolve<TError, TValue>(
-    record: CacheRecord<TError, TValue>,
-    value: TValue
-  ): asserts record is ResolvedCacheRecord<TError, TValue>;
-  reject<TError, TValue>(
-    record: CacheRecord<TError, TValue>,
-    error: TError
-  ): asserts record is RejectedCacheRecord<TError, TValue>;
-  revalidate<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): asserts record is RevalidatingCacheRecord<TError, TValue>;
-  pend<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): asserts record is PendingCacheRecord<TError, TValue>;
+  makePending<TValue>(): PendingCacheRecord<TValue>;
+  makeResolved<TValue>(value: TValue): ResolvedCacheRecord<TValue>;
+  makeRejected<TValue>(error: unknown): RejectedCacheRecord<TValue>;
+  isPending<TValue>(
+    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+  ): record is PendingCacheRecord<TValue>;
+  isResolved<TValue>(
+    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+  ): record is ResolvedCacheRecord<TValue>;
+  isRejected<TValue>(
+    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+  ): record is RejectedCacheRecord<TValue>;
+  resolve<TValue>(
+    record: CacheRecord<TValue>,
+    value: TValue,
+    promise: Promise<TValue>,
+  ): asserts record is ResolvedCacheRecord<TValue>;
+  reject<TValue>(
+    record: CacheRecord<TValue>,
+    error: unknown,
+    promise: Promise<TValue>,
+  ): asserts record is RejectedCacheRecord<TValue>;
+  pend<TValue>(record: CacheRecord<TValue>): asserts record is PendingCacheRecord<TValue>;
 };
 
 // this is kept in the type file to take advantage of the type merging
 export const CacheRecord: CacheRecordStatic = {
-  makePending<TError, TValue>(): PendingCacheRecord<TError, TValue> {
+  makePending<TValue>(): PendingCacheRecord<TValue> {
     return {
       data: {
         status: CacheStatus.PENDING,
@@ -115,150 +81,111 @@ export const CacheRecord: CacheRecordStatic = {
     };
   },
 
-  makeResolved<TError, TValue>(
-    value: TValue
-  ): ResolvedCacheRecord<TError, TValue> {
+  makeResolved<TValue>(value: TValue): ResolvedCacheRecord<TValue> {
     return {
       data: {
         status: CacheStatus.RESOLVED,
         value,
+        createdAt: Date.now(),
+        promise: Promise.resolve(value),
       },
     };
   },
 
-  makeRejected<TError, TValue>(
-    error: TError
-  ): RejectedCacheRecord<TError, TValue> {
+  makeRejected<TValue>(error: unknown): RejectedCacheRecord<TValue> {
     return {
       data: {
         status: CacheStatus.REJECTED,
         error,
+        promise: Promise.reject(error),
       },
     };
   },
 
-  makeRevalidating<TError, TValue>(
-    value: TValue
-  ): RevalidatingCacheRecord<TError, TValue> {
-    return {
-      data: {
-        status: CacheStatus.REVALIDATING,
-        value: defer<TValue>(),
-        controller: new AbortController(),
-        cached: value,
-      },
-    };
-  },
-
-  isPending<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is PendingCacheRecord<TError, TValue> {
-    return record.data.status === CacheStatus.PENDING;
-  },
-
-  isResolved<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is ResolvedCacheRecord<TError, TValue> {
-    return record.data.status === CacheStatus.RESOLVED;
-  },
-
-  isRejected<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is RejectedCacheRecord<TError, TValue> {
-    return record.data.status === CacheStatus.REJECTED;
-  },
-
-  isRevalidating<TError, TValue>(
-    record: CacheRecord<TError, TValue>
-  ): record is RevalidatingCacheRecord<TError, TValue> {
-    return record.data.status === CacheStatus.REVALIDATING;
-  },
-
-  resolve<TError, TValue>(record: CacheRecord<TError, TValue>, value: TValue) {
-    if (!CacheRecord.isPending(record) && !CacheRecord.isRevalidating(record)) {
-      throw new Error(
-        "Cannot resolve a record that is not pending or revalidating"
-      );
+  isPending<TValue>(
+    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+  ): record is PendingCacheRecord<TValue> {
+    if ('data' in record) {
+      return record.data.status === CacheStatus.PENDING;
     }
+    return record.status === CacheStatus.PENDING;
+  },
+
+  isResolved<TValue>(
+    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+  ): record is ResolvedCacheRecord<TValue> {
+    if ('data' in record) {
+      return record.data.status === CacheStatus.RESOLVED;
+    }
+    return record.status === CacheStatus.RESOLVED;
+  },
+
+  isRejected<TValue>(
+    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+  ): record is RejectedCacheRecord<TValue> {
+    if ('data' in record) {
+      return record.data.status === CacheStatus.REJECTED;
+    }
+    return record.status === CacheStatus.REJECTED;
+  },
+
+  resolve<TValue>(record: CacheRecord<TValue>, value: TValue, promise: Promise<TValue>) {
+    if (CacheRecord.isResolved(record) || CacheRecord.isRejected(record)) {
+      record.data = {
+        status: CacheStatus.RESOLVED,
+        value,
+        promise,
+        createdAt: Date.now(),
+      };
+      return;
+    }
+
     const deferred = record.data.value;
     deferred.resolve(value);
-    (record as unknown as ResolvedCacheRecord<TError, TValue>).data = {
+    (record as unknown as ResolvedCacheRecord<TValue>).data = {
       status: CacheStatus.RESOLVED,
       value,
+      promise,
+      createdAt: Date.now(),
     };
   },
 
-  reject<TError, TValue>(record: CacheRecord<TError, TValue>, error: TError) {
-    if (!CacheRecord.isPending(record) && !CacheRecord.isRevalidating(record)) {
-      throw new Error(
-        "Cannot reject a record that is not pending or revalidating"
-      );
-    }
+  reject<TValue>(record: CacheRecord<TValue>, error: unknown, promise: Promise<TValue>) {
+    invariant(
+      CacheRecord.isPending(record),
+      'Cannot reject a record that is not pending or revalidating. record is: ' +
+        record.data.status,
+    );
+
     const deferred = record.data.value;
     deferred.reject(error);
-    (record as unknown as RejectedCacheRecord<TError, TValue>).data = {
+    (record as unknown as RejectedCacheRecord<TValue>).data = {
       status: CacheStatus.REJECTED,
       error,
+      promise,
     };
   },
 
-  revalidate<TError, TValue>(
-    record:
-      | ResolvedCacheRecord<TError, TValue>
-      | RevalidatingCacheRecord<TError, TValue>
-  ) {
-    if (
-      !CacheRecord.isResolved(record) &&
-      !CacheRecord.isRevalidating(record)
-    ) {
-      throw new Error(
-        "Cannot revalidate a record that is not resolved or revalidating"
-      );
-    }
-    record.data = {
-      status: CacheStatus.REVALIDATING,
-      value: defer<TValue>(),
-      controller: new AbortController(),
-      cached:
-        record.data.status === "resolved"
-          ? record.data.value
-          : record.data.cached,
-    };
-  },
-
-  pend<TError, TValue>(record: CacheRecord<TError, TValue>) {
-    if (!CacheRecord.isPending(record) && !CacheRecord.isRejected(record)) {
-      throw new Error("Cannot pend a record that is not pending or rejected");
-    }
-
+  pend<TValue>(record: CacheRecord<TValue>) {
     record.data = {
       status: CacheStatus.PENDING,
       value: defer<TValue>(),
       controller: new AbortController(),
+      lastValue: CacheRecord.isResolved(record) ? record.data.value : undefined,
     };
   },
 };
 
-export type CacheValueResult<TError, TValue> =
-  | [
-      status: typeof CacheStatus.PENDING | typeof CacheStatus.MISSING,
-      value: undefined
-    ]
-  | [status: typeof CacheStatus.REJECTED, error: TError]
-  | [
-      status: typeof CacheStatus.RESOLVED | typeof CacheStatus.REVALIDATING,
-      value: TValue
-    ];
-
-export const MutationStatus = {
-  PENDING: CacheStatus.PENDING,
-  RESOLVED: CacheStatus.RESOLVED,
-  REJECTED: CacheStatus.REJECTED,
-  IDLE: "idle",
+export const CacheResultStatus = {
+  ...CacheStatus,
+  REVALIDATING: 'revalidating',
 } as const;
-
-export type MutationStatus =
-  (typeof MutationStatus)[keyof typeof MutationStatus];
+export type CacheResultStatus = (typeof CacheResultStatus)[keyof typeof CacheResultStatus];
+export type CacheValueResult<TValue> =
+  | [status: typeof CacheResultStatus.PENDING, value: undefined]
+  | [status: typeof CacheResultStatus.REVALIDATING, value: TValue]
+  | [status: typeof CacheResultStatus.REJECTED, error: unknown]
+  | [status: typeof CacheResultStatus.RESOLVED, value: TValue];
 
 type onEviction<Key> = (key: Key) => void;
 
@@ -268,43 +195,65 @@ export interface CacheMap<Key, Value> {
   get(key: Key): Value | undefined;
   has(key: Key): boolean;
   set(key: Key, value: Value): this;
-  forEach(
-    callbackfn: (value: Value, key: Key, map: CacheMap<Key, Value>) => void
-  ): void;
+  forEach(callbackfn: (value: Value, key: Key, map: CacheMap<Key, Value>) => void): void;
 }
 
-export type SuspenseCacheOptions<
-  TParams extends any[] = any[],
-  TError = unknown,
-  TValue = unknown
-> = {
-  getKey: (...args: TParams) => string;
-  getCache: (
-    onEviction: onEviction<string>
-  ) => CacheMap<string, CacheRecord<TError, TValue>>;
-  load: (
-    context: CacheLoadContext,
-    ...args: TParams
-  ) => PromiseLike<TValue> | TValue;
+export type SuspenseCacheOptions<TParams extends any[], TValue> = {
+  getKey: (args: TParams) => string;
+  getCache: (onEviction: onEviction<string>) => CacheMap<string, CacheRecord<TValue>>;
+  load: (context: CacheLoadContext, ...args: TParams) => Promise<TValue>;
   debug: boolean;
-  debugLabel?: string;
-  onSuccess?: (value: TValue) => void;
-  onError?: (error: TError) => void;
+  name: string;
+  devtools?: boolean;
+  onError?: (key: TParams, error: unknown) => void;
+  onSuccess?: (key: TParams, value: TValue) => void;
+  ttl?: number | ((key: TParams, value: TValue) => number | undefined);
 };
 
 export type AnyFunction<ReturnType> = (...args: any[]) => ReturnType;
 
 export type CacheLoadContext = {
   signal: AbortSignal;
+  abort: () => void;
 };
 
-export type ResourceParameters<T> = T extends (
-  ...args: [infer _cacheContext, ...infer args]
-) => any
-  ? args
-  : never;
+export type GetLoadParameters<T> = T extends (...args: [any, ...infer args]) => any ? args : never;
 
 export type Resource = Record<
   string,
-  (context: CacheLoadContext, ...args: any[]) => PromiseLike<any> | any
+  (context: CacheLoadContext, ...args: any[]) => Promise<any> | any
 >;
+
+export type ResourceParams<T extends Resource> = {
+  [Key in keyof T]: GetLoadParameters<T[Key]>;
+};
+
+export type ResourceValues<T extends Resource> = {
+  [Key in keyof T]: Awaited<ReturnType<T[Key]>>;
+};
+
+export type Mutation<Trigger extends AnyFunction<any>> = [trigger: Trigger, isPending: boolean];
+
+export type SuspenseCacheEvent = {
+  key: string;
+  args: any[];
+} & (
+  | {
+      type: 'pending' | 'abort' | 'evict' | 'invalidate' | 'delete' | 'clear';
+    }
+  | {
+      type: 'resolve';
+      value: any;
+    }
+  | {
+      type: 'reject';
+      error: any;
+    }
+  | {
+      type: 'set';
+      value: any;
+      lastValue: any;
+    }
+);
+
+export const DevtoolsSymbol = Symbol.for('cache/devtools');

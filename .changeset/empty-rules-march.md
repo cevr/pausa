@@ -1,0 +1,5 @@
+---
+"pausa": minor
+---
+
+revamp library
