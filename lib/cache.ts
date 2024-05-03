@@ -732,7 +732,7 @@ export interface SuspenseResourceCache<
     ) => boolean
   ): void;
 
-  useValue<TResourceKey extends keyof TResource>(
+  useImperativeValue<TResourceKey extends keyof TResource>(
     key: TResourceKey,
     ...args: TResourceParams[TResourceKey]
   ): CacheValueResult<TResourceValues[TResourceKey]>;
@@ -799,11 +799,6 @@ export interface SuspenseResourceCache<
       resetDelay?: number;
     }
   ): Mutation<(...args: MutationParams) => Promise<Res>>;
-
-  useImperativeValue<TResourceKey extends keyof TResource>(
-    key: TResourceKey,
-    ...args: TResourceParams[TResourceKey]
-  ): CacheValueResult<TResourceValues[TResourceKey]>;
 }
 
 export function cacheResource<
@@ -870,9 +865,45 @@ export function cacheResource<
   return suspenseCache;
 }
 
+export interface SuspenseStore<TValue>
+  extends Pick<
+    SuspenseCache<[], TValue>,
+    | "peek"
+    | "getStatus"
+    | "subscribe"
+    | "get"
+    | "set"
+    | "has"
+    | "clear"
+    | "delete"
+    | "use"
+    | "useSynced"
+    | "useStatus"
+    | "useSelector"
+  > {}
+
+export interface SuspenseResourceStore<TValue extends Record<string, any>>
+  extends Pick<
+    SuspenseResourceCache<{
+      [Key in keyof TValue]: () => Promise<TValue[Key]>;
+    }>,
+    | "peek"
+    | "getStatus"
+    | "subscribe"
+    | "get"
+    | "set"
+    | "has"
+    | "clear"
+    | "delete"
+    | "use"
+    | "useSynced"
+    | "useStatus"
+    | "useSelector"
+  > {}
+
 export function store<TValue>(
   options?: Partial<Omit<SuspenseCacheOptions<[], TValue>, "load" | "getKey">>
-): SuspenseCache<[], TValue> {
+): SuspenseStore<TValue> {
   return cache(() => new Promise<TValue>(() => {}), options) as any;
 }
 
@@ -883,8 +914,6 @@ export function storeResource<TValue extends Record<string, any>>(
       "load" | "getKey"
     >
   >
-): SuspenseResourceCache<{
-  [Key in keyof TValue]: () => Promise<TValue[Key]>;
-}> {
+): SuspenseResourceStore<TValue> {
   return cache(() => new Promise<TValue>(() => {}), options as any) as any;
 }
