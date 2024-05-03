@@ -1,6 +1,6 @@
-`pausa` is a small set of utilities to help you manage data fetching and caching in React using Suspense.
+a simple and powerful React.Suspense Cache.
 
-Heavily inspired by [Brian's](https://twitter.com/brian_d_vaughn) work in [Suspense](https://github.com/bvaughn/suspense)
+Inspired by [Brian's](https://twitter.com/brian_d_vaughn) work in [Suspense](https://github.com/bvaughn/suspense)
 
 ## Installation
 
