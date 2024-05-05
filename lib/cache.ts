@@ -5,7 +5,7 @@
 import * as React from "react";
 
 import { replaceEqualDeep } from "./internals.js";
-import { CacheRecord, CacheStatus } from "./types.js";
+import { CacheRecord, CacheResultStatus, CacheStatus } from "./types.js";
 import type {
   CacheLoadContext,
   CacheMap,
@@ -75,7 +75,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
     }
   };
 
-  private getOrCreateRecord(...args: TParams): CacheRecord<TValue> {
+  private getOrCreateRecord(args: TParams): CacheRecord<TValue> {
     const cacheKey = this.options.getKey(args);
 
     let record = this.recordMap.get(cacheKey);
@@ -204,7 +204,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
 
       this.loadValue(cacheKey, record, ...args);
     } else {
-      this.getOrCreateRecord(...args);
+      this.getOrCreateRecord(args);
     }
     return this.get(...args);
   }
@@ -221,7 +221,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
         CacheRecord.pend(record);
         this.loadValue(cacheKey, record, ...args);
       } else {
-        record = this.getOrCreateRecord(...args);
+        record = this.getOrCreateRecord(args);
       }
       records.push([args, record]);
     });
@@ -308,7 +308,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
   }
 
   get<Key extends TParams>(...args: Key): Promise<TValue> {
-    const record = this.getOrCreateRecord(...args);
+    const record = this.getOrCreateRecord(args);
 
     if (CacheRecord.isPending(record)) {
       return record.data.value.promise;
@@ -346,7 +346,10 @@ export class SuspenseCache<TParams extends any[], TValue> {
 
     if (CacheRecord.isResolved(currentRecord)) {
       nextValue = replaceEqualDeep(currentRecord.data.value, value);
-    } else if (CacheRecord.isPending(currentRecord)) {
+    } else if (
+      CacheRecord.isPending(currentRecord) &&
+      currentRecord.data.lastValue
+    ) {
       nextValue = replaceEqualDeep(currentRecord.data.lastValue, value);
     }
 
@@ -361,7 +364,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
       type: "set",
       key: cacheKey,
       args: key,
-      lastValue: (currentRecord.data as any).lastValue,
+      lastValue: currentRecord.data?.value,
       value: nextValue,
     });
     this.reverseKeyMap.set(cacheKey, key);
@@ -430,7 +433,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
   // this will suspend if the value is not yet resolved
   // so it will always return a value or throw to the nearest error boundary
   private read<Key extends TParams>(...args: Key): TValue {
-    const record = this.getOrCreateRecord(...args);
+    const record = this.getOrCreateRecord(args);
     if (CacheRecord.isResolved(record)) {
       return record.data.value;
     }
@@ -481,7 +484,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
    * This will prime the cache with a value that will be read elsewhere.
    */
   preload<Key extends TParams>(...args: Key): void {
-    const record = this.getOrCreateRecord(...args);
+    const record = this.getOrCreateRecord(args);
     if (CacheRecord.isRejected(record)) {
       this.invalidate(...args);
     }
@@ -504,7 +507,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
   ): TSelected {
     return React.useSyncExternalStore(
       React.useCallback((cb) => this.subscribe(key, cb), key),
-      React.useCallback(() => selector(this.read(...key)), [...key, selector])
+      React.useCallback(() => selector(this.read(...key)), [key, selector])
     );
   }
 
@@ -603,30 +606,19 @@ export class SuspenseCache<TParams extends any[], TValue> {
   useImperativeValue(...args: TParams): CacheValueResult<TValue> {
     const record = React.useSyncExternalStore(
       React.useCallback((cb) => this.subscribe(args, cb), args),
-      React.useCallback(() => {
-        const r = this.getOrCreateRecord(...args);
-        return r.data;
-      }, args)
+      React.useCallback(() => this.getOrCreateRecord(args).data, args)
     );
-    if (
-      record.status === CacheStatus.PENDING &&
-      record.lastValue === undefined
-    ) {
-      return [CacheStatus.PENDING, undefined];
-    }
-
-    if (
-      record.status === CacheStatus.PENDING &&
-      record.lastValue !== undefined
-    ) {
-      return ["revalidating" as const, record.lastValue];
+    if (record.status === CacheStatus.PENDING) {
+      return record.lastValue !== undefined
+        ? [CacheResultStatus.REVALIDATING, record.lastValue]
+        : [CacheResultStatus.PENDING, undefined];
     }
 
     if (record.status === CacheStatus.REJECTED) {
-      return [CacheStatus.REJECTED, record.error];
+      return [CacheResultStatus.REJECTED, record.error];
     }
 
-    return [CacheStatus.RESOLVED, record.value as TValue];
+    return [CacheResultStatus.RESOLVED, record.value];
   }
 
   logs(): SuspenseCacheEvent[] {
