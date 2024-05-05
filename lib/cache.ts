@@ -865,40 +865,29 @@ export function cacheResource<
   return suspenseCache;
 }
 
+type IncludedStoreKeys =
+  | "peek"
+  | "getStatus"
+  | "subscribe"
+  | "get"
+  | "set"
+  | "has"
+  | "clear"
+  | "delete"
+  | "use"
+  | "useSynced"
+  | "useStatus"
+  | "useSelector";
+
 export interface SuspenseStore<TValue>
-  extends Pick<
-    SuspenseCache<[], TValue>,
-    | "peek"
-    | "getStatus"
-    | "subscribe"
-    | "get"
-    | "set"
-    | "has"
-    | "clear"
-    | "delete"
-    | "use"
-    | "useSynced"
-    | "useStatus"
-    | "useSelector"
-  > {}
+  extends Pick<SuspenseCache<[], TValue>, IncludedStoreKeys> {}
 
 export interface SuspenseResourceStore<TValue extends Record<string, any>>
   extends Pick<
     SuspenseResourceCache<{
       [Key in keyof TValue]: () => Promise<TValue[Key]>;
     }>,
-    | "peek"
-    | "getStatus"
-    | "subscribe"
-    | "get"
-    | "set"
-    | "has"
-    | "clear"
-    | "delete"
-    | "use"
-    | "useSynced"
-    | "useStatus"
-    | "useSelector"
+    IncludedStoreKeys
   > {}
 
 export function store<TValue>(
