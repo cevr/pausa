@@ -189,6 +189,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
       });
 
       if (CacheRecord.isPending(record)) {
+        // abort but do not delete the record
         this.logEvent({
           type: "abort",
           key: cacheKey,
@@ -220,9 +221,9 @@ export class SuspenseCache<TParams extends any[], TValue> {
         CacheRecord.pend(record);
         this.loadValue(cacheKey, record, ...args);
       } else {
-        this.getOrCreateRecord(...args);
+        record = this.getOrCreateRecord(...args);
       }
-      records.push([args, this.recordMap.get(cacheKey)!]);
+      records.push([args, record]);
     });
     records.forEach(([args, record]) => {
       this.notifySubscribers(args, record);
@@ -248,17 +249,15 @@ export class SuspenseCache<TParams extends any[], TValue> {
     const cacheKey = this.options.getKey(args);
     const record = this.recordMap.get(cacheKey);
 
-    if (record) {
-      if (CacheRecord.isResolved(record)) {
-        return record.data.value;
-      }
+    if (CacheRecord.isResolved(record)) {
+      return record.data.value;
+    }
 
-      if (CacheRecord.isRejected(record)) {
-        throw record.data.error;
-      }
-      if (record.data.lastValue) {
-        return record.data.lastValue;
-      }
+    if (CacheRecord.isRejected(record)) {
+      throw record.data.error;
+    }
+    if (record?.data.lastValue) {
+      return record.data.lastValue;
     }
   }
 
@@ -344,19 +343,20 @@ export class SuspenseCache<TParams extends any[], TValue> {
       currentRecord.data.controller.abort();
     }
     let nextValue = value;
-    if (currentRecord) {
-      if (CacheRecord.isResolved(currentRecord)) {
-        nextValue = replaceEqualDeep(currentRecord.data.value, value);
-      } else if (CacheRecord.isPending(currentRecord)) {
-        nextValue = replaceEqualDeep(currentRecord.data.lastValue, value);
-      }
+
+    if (CacheRecord.isResolved(currentRecord)) {
+      nextValue = replaceEqualDeep(currentRecord.data.value, value);
+    } else if (CacheRecord.isPending(currentRecord)) {
+      nextValue = replaceEqualDeep(currentRecord.data.lastValue, value);
     }
+
     if (!currentRecord) {
       currentRecord = CacheRecord.makeResolved(nextValue);
       this.recordMap.set(cacheKey, currentRecord);
     } else {
       CacheRecord.resolve(currentRecord, nextValue, Promise.resolve(nextValue));
     }
+
     this.logEvent({
       type: "set",
       key: cacheKey,
@@ -491,11 +491,9 @@ export class SuspenseCache<TParams extends any[], TValue> {
   abort<Key extends TParams>(...args: Key): boolean {
     const cacheKey = this.options.getKey(args);
     const record = this.recordMap.get(cacheKey);
-    if (record && CacheRecord.isPending(record)) {
+    if (CacheRecord.isPending(record)) {
       record.data.controller.abort();
-      if (CacheRecord.isPending(record)) {
-        return this.delete(...args);
-      }
+      return this.delete(...args);
     }
     return false;
   }

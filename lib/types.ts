@@ -1,6 +1,6 @@
-import { invariant } from './internals';
-import type { Deferred } from './utils';
-import { defer, DeferredStatus } from './utils';
+import { invariant } from "./internals";
+import type { Deferred } from "./utils";
+import { defer, DeferredStatus } from "./utils";
 
 export const CacheStatus = {
   ...DeferredStatus,
@@ -48,25 +48,27 @@ type CacheRecordStatic = {
   makeResolved<TValue>(value: TValue): ResolvedCacheRecord<TValue>;
   makeRejected<TValue>(error: unknown): RejectedCacheRecord<TValue>;
   isPending<TValue>(
-    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+    record?: CacheRecord<TValue>
   ): record is PendingCacheRecord<TValue>;
   isResolved<TValue>(
-    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+    record?: CacheRecord<TValue>
   ): record is ResolvedCacheRecord<TValue>;
   isRejected<TValue>(
-    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+    record?: CacheRecord<TValue>
   ): record is RejectedCacheRecord<TValue>;
   resolve<TValue>(
     record: CacheRecord<TValue>,
     value: TValue,
-    promise: Promise<TValue>,
+    promise: Promise<TValue>
   ): asserts record is ResolvedCacheRecord<TValue>;
   reject<TValue>(
     record: CacheRecord<TValue>,
     error: unknown,
-    promise: Promise<TValue>,
+    promise: Promise<TValue>
   ): asserts record is RejectedCacheRecord<TValue>;
-  pend<TValue>(record: CacheRecord<TValue>): asserts record is PendingCacheRecord<TValue>;
+  pend<TValue>(
+    record: CacheRecord<TValue>
+  ): asserts record is PendingCacheRecord<TValue>;
 };
 
 // this is kept in the type file to take advantage of the type merging
@@ -103,33 +105,28 @@ export const CacheRecord: CacheRecordStatic = {
   },
 
   isPending<TValue>(
-    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+    record?: CacheRecord<TValue>
   ): record is PendingCacheRecord<TValue> {
-    if ('data' in record) {
-      return record.data.status === CacheStatus.PENDING;
-    }
-    return record.status === CacheStatus.PENDING;
+    return record?.data.status === CacheStatus.PENDING;
   },
 
   isResolved<TValue>(
-    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+    record?: CacheRecord<TValue>
   ): record is ResolvedCacheRecord<TValue> {
-    if ('data' in record) {
-      return record.data.status === CacheStatus.RESOLVED;
-    }
-    return record.status === CacheStatus.RESOLVED;
+    return record?.data.status === CacheStatus.RESOLVED;
   },
 
   isRejected<TValue>(
-    record: CacheRecord<TValue> | CacheRecord<TValue>['data'],
+    record?: CacheRecord<TValue>
   ): record is RejectedCacheRecord<TValue> {
-    if ('data' in record) {
-      return record.data.status === CacheStatus.REJECTED;
-    }
-    return record.status === CacheStatus.REJECTED;
+    return record?.data.status === CacheStatus.REJECTED;
   },
 
-  resolve<TValue>(record: CacheRecord<TValue>, value: TValue, promise: Promise<TValue>) {
+  resolve<TValue>(
+    record: CacheRecord<TValue>,
+    value: TValue,
+    promise: Promise<TValue>
+  ) {
     if (CacheRecord.isResolved(record) || CacheRecord.isRejected(record)) {
       record.data = {
         status: CacheStatus.RESOLVED,
@@ -150,11 +147,15 @@ export const CacheRecord: CacheRecordStatic = {
     };
   },
 
-  reject<TValue>(record: CacheRecord<TValue>, error: unknown, promise: Promise<TValue>) {
+  reject<TValue>(
+    record: CacheRecord<TValue>,
+    error: unknown,
+    promise: Promise<TValue>
+  ) {
     invariant(
       CacheRecord.isPending(record),
-      'Cannot reject a record that is not pending or revalidating. record is: ' +
-        record.data.status,
+      "Cannot reject a record that is not pending or revalidating. record is: " +
+        record.data.status
     );
 
     const deferred = record.data.value;
@@ -178,9 +179,10 @@ export const CacheRecord: CacheRecordStatic = {
 
 export const CacheResultStatus = {
   ...CacheStatus,
-  REVALIDATING: 'revalidating',
+  REVALIDATING: "revalidating",
 } as const;
-export type CacheResultStatus = (typeof CacheResultStatus)[keyof typeof CacheResultStatus];
+export type CacheResultStatus =
+  (typeof CacheResultStatus)[keyof typeof CacheResultStatus];
 export type CacheValueResult<TValue> =
   | [status: typeof CacheResultStatus.PENDING, value: undefined]
   | [status: typeof CacheResultStatus.REVALIDATING, value: TValue]
@@ -195,12 +197,16 @@ export interface CacheMap<Key, Value> {
   get(key: Key): Value | undefined;
   has(key: Key): boolean;
   set(key: Key, value: Value): this;
-  forEach(callbackfn: (value: Value, key: Key, map: CacheMap<Key, Value>) => void): void;
+  forEach(
+    callbackfn: (value: Value, key: Key, map: CacheMap<Key, Value>) => void
+  ): void;
 }
 
 export type SuspenseCacheOptions<TParams extends any[], TValue> = {
   getKey: (args: TParams) => string;
-  getCache: (onEviction: onEviction<string>) => CacheMap<string, CacheRecord<TValue>>;
+  getCache: (
+    onEviction: onEviction<string>
+  ) => CacheMap<string, CacheRecord<TValue>>;
   load: (context: CacheLoadContext, ...args: TParams) => Promise<TValue>;
   debug: boolean;
   name: string;
@@ -217,7 +223,11 @@ export type CacheLoadContext = {
   abort: () => void;
 };
 
-export type GetLoadParameters<T> = T extends (...args: [any, ...infer args]) => any ? args : never;
+export type GetLoadParameters<T> = T extends (
+  ...args: [any, ...infer args]
+) => any
+  ? args
+  : never;
 
 export type Resource = Record<
   string,
@@ -232,28 +242,31 @@ export type ResourceValues<T extends Resource> = {
   [Key in keyof T]: Awaited<ReturnType<T[Key]>>;
 };
 
-export type Mutation<Trigger extends AnyFunction<any>> = [trigger: Trigger, isPending: boolean];
+export type Mutation<Trigger extends AnyFunction<any>> = [
+  trigger: Trigger,
+  isPending: boolean
+];
 
 export type SuspenseCacheEvent = {
   key: string;
   args: any[];
 } & (
   | {
-      type: 'pending' | 'abort' | 'evict' | 'invalidate' | 'delete' | 'clear';
+      type: "pending" | "abort" | "evict" | "invalidate" | "delete" | "clear";
     }
   | {
-      type: 'resolve';
+      type: "resolve";
       value: any;
     }
   | {
-      type: 'reject';
+      type: "reject";
       error: any;
     }
   | {
-      type: 'set';
+      type: "set";
       value: any;
       lastValue: any;
     }
 );
 
-export const DevtoolsSymbol = Symbol.for('cache/devtools');
+export const DevtoolsSymbol = Symbol.for("cache/devtools");
