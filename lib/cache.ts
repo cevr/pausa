@@ -163,14 +163,11 @@ export class SuspenseCache<TParams extends any[], TValue> {
     args: TParams,
     record: CacheRecord<TValue> | null
   ): void {
-    // const subscribers = this.subscriberMap.get(cacheKey);
-    if (args) {
-      React.startTransition(() => {
-        this.subscribers.forEach((subscriber) =>
-          subscriber(args, record?.data?.status ?? null)
-        );
-      });
-    }
+    React.startTransition(() => {
+      this.subscribers.forEach((subscriber) =>
+        subscriber(args, record?.data?.status ?? null)
+      );
+    });
   }
 
   /**
@@ -367,6 +364,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
       lastValue: currentRecord.data?.value,
       value: nextValue,
     });
+
     this.reverseKeyMap.set(cacheKey, key);
     // we want to wrap this in a transition so React's minimum suspense duration heurestics are skipped
     // this would happen if we set a value that was pending and then immediately read it
@@ -434,9 +432,23 @@ export class SuspenseCache<TParams extends any[], TValue> {
     const cache = this;
 
     return React.useSyncExternalStore(
-      React.useCallback((cb) => cache.subscribe(args, cb), args),
-      React.useCallback(() => cache.getStatus(...args), args)
+      (cb) => cache.subscribe(args, cb),
+      () => cache.getStatus(...args)
     );
+  }
+
+  private read(args: TParams): TValue {
+    const record = this.getOrCreateRecord(args);
+    if (CacheRecord.isResolved(record)) {
+      return record.data.value;
+    }
+    if (CacheRecord.isRejected(record)) {
+      throw record.data.error;
+    }
+    if (record.data.lastValue) {
+      return record.data.lastValue;
+    }
+    return React.use(record.data.value.promise);
   }
 
   /**
@@ -446,19 +458,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
    * If the value errors it will throw the error to the nearest error boundary.
    */
   use<Key extends TParams>(...args: Key): TValue {
-    const [value, setValue] = React.useState(() => {
-      const record = this.getOrCreateRecord(args);
-      if (CacheRecord.isResolved(record)) {
-        return record.data.value;
-      }
-      if (CacheRecord.isRejected(record)) {
-        throw record.data.error;
-      }
-      if (record.data.lastValue) {
-        return record.data.lastValue;
-      }
-      return React.use(record.data.value.promise);
-    });
+    const [value, setValue] = React.useState(() => this.read(args));
     React.useEffect(() => {
       return this.subscribe(args, () => {
         const record = this.getOrCreateRecord(args);
@@ -481,8 +481,8 @@ export class SuspenseCache<TParams extends any[], TValue> {
    */
   useSynced<Key extends TParams>(...args: Key): TValue {
     return React.useSyncExternalStore(
-      React.useCallback((cb) => this.subscribe(args, cb), args),
-      React.useCallback(() => this.use(...args), args)
+      (cb) => this.subscribe(args, cb),
+      () => this.read(args)
     );
   }
 
@@ -548,10 +548,9 @@ export class SuspenseCache<TParams extends any[], TValue> {
     key: Key,
     selector: (value: TValue) => TSelected
   ): TSelected {
-    const boundSelector = React.useCallback(
-      () => selector(this.use(...key)),
-      [key, selector]
-    );
+    const boundSelector = React.useCallback(() => {
+      return selector(this.read(key));
+    }, [key, selector]);
     return React.useSyncExternalStore(
       React.useCallback((cb) => this.subscribe(key, cb), [key]),
       boundSelector,
@@ -653,8 +652,8 @@ export class SuspenseCache<TParams extends any[], TValue> {
 
   useImperativeValue(...args: TParams): CacheValueResult<TValue> {
     const record = React.useSyncExternalStore(
-      React.useCallback((cb) => this.subscribe(args, cb), args),
-      React.useCallback(() => this.getOrCreateRecord(args).data, args)
+      (cb) => this.subscribe(args, cb),
+      () => this.getOrCreateRecord(args).data
     );
     if (record.status === CacheStatus.PENDING) {
       return record.lastValue !== undefined
