@@ -430,26 +430,6 @@ export class SuspenseCache<TParams extends any[], TValue> {
     this.deleteBatch(keysToDelete);
   }
 
-  // this will suspend if the value is not yet resolved
-  // so it will always return a value or throw to the nearest error boundary
-  private read<Key extends TParams>(...args: Key): TValue {
-    const record = this.getOrCreateRecord(args);
-    if (CacheRecord.isResolved(record)) {
-      return record.data.value;
-    }
-
-    if (CacheRecord.isRejected(record)) {
-      throw record.data.error;
-    }
-
-    if (record.data.lastValue) {
-      // until react 19 - transitions still hit the fallback, we don't want that if we dont have to
-      return record.data.lastValue;
-    }
-
-    throw record.data.value.promise;
-  }
-
   useStatus<Key extends TParams>(...args: Key): CacheStatus | undefined {
     const cache = this;
 
@@ -466,8 +446,34 @@ export class SuspenseCache<TParams extends any[], TValue> {
    * If the value errors it will throw the error to the nearest error boundary.
    */
   use<Key extends TParams>(...args: Key): TValue {
-    // todo: once react 19 is out, we can use `React.use`
-    return this.useSynced(...args);
+    const [value, setValue] = React.useState(() => {
+      const record = this.getOrCreateRecord(args);
+      if (CacheRecord.isResolved(record)) {
+        return record.data.value;
+      }
+      if (CacheRecord.isRejected(record)) {
+        throw record.data.error;
+      }
+      if (record.data.lastValue) {
+        return record.data.lastValue;
+      }
+      return React.use(record.data.value.promise);
+    });
+    React.useEffect(() => {
+      return this.subscribe(args, () => {
+        const record = this.getOrCreateRecord(args);
+        if (CacheRecord.isResolved(record)) {
+          const nextValue = record.data.value;
+          if (!Object.is(value, nextValue)) {
+            setValue(nextValue);
+          }
+        }
+        if (CacheRecord.isRejected(record)) {
+          throw record.data.error;
+        }
+      });
+    }, args);
+    return value;
   }
 
   /**
@@ -476,7 +482,7 @@ export class SuspenseCache<TParams extends any[], TValue> {
   useSynced<Key extends TParams>(...args: Key): TValue {
     return React.useSyncExternalStore(
       React.useCallback((cb) => this.subscribe(args, cb), args),
-      React.useCallback(() => this.read(...args), args)
+      React.useCallback(() => this.use(...args), args)
     );
   }
 
@@ -505,9 +511,51 @@ export class SuspenseCache<TParams extends any[], TValue> {
     key: Key,
     selector: (value: TValue) => TSelected
   ): TSelected {
+    const [value, setValue] = React.useState<TSelected>(() => {
+      const record = this.getOrCreateRecord(key);
+      if (CacheRecord.isResolved(record)) {
+        return selector(record.data.value);
+      }
+      if (CacheRecord.isRejected(record)) {
+        throw record.data.error;
+      }
+      if (record.data.lastValue) {
+        return selector(record.data.lastValue);
+      }
+      const value = React.use(record.data.value.promise);
+      const nextValue = selector(value);
+      return nextValue;
+    });
+
+    React.useEffect(() => {
+      return this.subscribe(key, () => {
+        const record = this.getOrCreateRecord(key);
+        if (CacheRecord.isResolved(record)) {
+          const nextValue = selector(record.data.value);
+          if (!Object.is(value, nextValue)) {
+            setValue(nextValue);
+          }
+        }
+        if (CacheRecord.isRejected(record)) {
+          throw record.data.error;
+        }
+      });
+    }, [key]);
+    return value;
+  }
+
+  useSyncedSelector<Key extends TParams, TSelected>(
+    key: Key,
+    selector: (value: TValue) => TSelected
+  ): TSelected {
+    const boundSelector = React.useCallback(
+      () => selector(this.use(...key)),
+      [key, selector]
+    );
     return React.useSyncExternalStore(
-      React.useCallback((cb) => this.subscribe(key, cb), key),
-      React.useCallback(() => selector(this.read(...key)), [key, selector])
+      React.useCallback((cb) => this.subscribe(key, cb), [key]),
+      boundSelector,
+      boundSelector
     );
   }
 

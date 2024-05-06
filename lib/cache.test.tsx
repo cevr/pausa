@@ -213,7 +213,7 @@ describe("SuspenseCache", () => {
       await React.act(async () => {
         suspenseCache.invalidate();
       });
-
+      expect(suspenseCount).toBe(1);
       expect(lastRenderedValue).toBe("async");
 
       await React.act(async () => {
@@ -221,7 +221,7 @@ describe("SuspenseCache", () => {
         await deferred.promise;
       });
 
-      expect(renderCount).toBe(2);
+      expect(suspenseCount).toBe(1);
       expect(lastRenderedValue).toBe("async-2");
     });
   });
@@ -1244,7 +1244,12 @@ describe("SuspenseCache", () => {
       expect(suspenseCount).toBe(0);
 
       await React.act(async () => suspenseCache.delete("sync"));
-      expect(suspenseCount).toBe(1);
+      expect(suspenseCount).toBe(0);
+      expect(lastRenderedValue).toBe("sync");
+      await React.act(async () => suspenseCache.get("sync"));
+      expect(suspenseCount).toBe(0);
+      expect(lastRenderedValue).toBe("sync");
+      expect(renderCount).toBe(1);
     });
 
     it("should reach error boundary if error is thrown", async () => {
@@ -1368,7 +1373,7 @@ describe("SuspenseCache", () => {
 
       expect(lastRenderedValue).toBe("b");
       expect(lastResourceRenderedValue).toBe("b");
-      expect(renderCount).toBe(1);
+      expect(renderCount).toBe(2);
       expect(lastResourceRenderCount).toBe(1);
 
       await React.act(async () => {
@@ -1378,7 +1383,7 @@ describe("SuspenseCache", () => {
 
       expect(lastRenderedValue).toBe("c");
       expect(lastResourceRenderedValue).toBe("c");
-      expect(renderCount).toBe(2);
+      expect(renderCount).toBe(3);
       expect(lastResourceRenderCount).toBe(2);
     });
 
@@ -1446,55 +1451,6 @@ describe("SuspenseCache", () => {
 
       expect(renderCount).toBe(0);
       expect(suspenseCount).toBe(1);
-    });
-
-    it("will re-suspend if the value is deleted", async () => {
-      let deferred: Deferred<string>;
-      const suspenseCache = cache(async () => {
-        deferred = defer();
-        return deferred.promise;
-      });
-
-      let renderCount = 0;
-      let suspenseCount = 0;
-      function Component(): any {
-        const value = suspenseCache.useSelector([], (value) => value);
-        renderCount++;
-        return value;
-      }
-
-      function Fallback(): any {
-        suspenseCount++;
-        return null;
-      }
-
-      async function mount(): Promise<void> {
-        container = document.createElement("div");
-        const root = createRoot(container);
-        await React.act(async () => {
-          root.render(
-            <React.Suspense fallback={<Fallback />}>
-              <Component />
-            </React.Suspense>
-          );
-        });
-      }
-
-      await mount();
-      await React.act(async () => {
-        deferred!.resolve("test");
-        await deferred!.promise;
-      });
-
-      expect(renderCount).toBe(1);
-      expect(suspenseCount).toBe(1);
-
-      await React.act(async () => {
-        suspenseCache.delete();
-      });
-
-      expect(suspenseCount).toBe(2);
-      expect(renderCount).toBe(1);
     });
 
     it("will throw error if the value is rejected", async () => {
@@ -1952,7 +1908,7 @@ describe("SuspenseCache", () => {
         <>
           <MutatingComponent />
           <ResourceMutatingComponent />
-          <React.Suspense>
+          <React.Suspense fallback={null}>
             <CacheReadingComponent />
             <ResourceCacheReadingComponent />
           </React.Suspense>
