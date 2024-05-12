@@ -1,5 +1,11 @@
 # pausa
 
+## 0.4.0
+
+### Minor Changes
+
+- bea2b8b: rename exports - storeResource -> resourceStore
+
 ## 0.3.1
 
 ### Patch Changes
