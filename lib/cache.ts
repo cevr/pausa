@@ -886,7 +886,7 @@ export function store<TValue>(
   return cache(() => new Promise<TValue>(() => {}), options) as any;
 }
 
-export function storeResource<TValue extends Record<string, any>>(
+export function resourceStore<TValue extends Record<string, any>>(
   options?: Partial<
     Omit<
       SuspenseCacheOptions<[keyof TValue], TValue[keyof TValue]>,
