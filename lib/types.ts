@@ -172,7 +172,11 @@ export const CacheRecord: CacheRecordStatic = {
       status: CacheStatus.PENDING,
       value: defer<TValue>(),
       controller: new AbortController(),
-      lastValue: CacheRecord.isResolved(record) ? record.data.value : undefined,
+      lastValue: CacheRecord.isResolved(record)
+        ? record.data.value
+        : CacheRecord.isPending(record)
+        ? record.data.lastValue
+        : undefined,
     };
   },
 };
