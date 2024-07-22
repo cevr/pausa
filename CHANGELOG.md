@@ -1,5 +1,11 @@
 # pausa
 
+## 0.4.1
+
+### Patch Changes
+
+- 6db8c3f: ensure lastValue does not get lost between consecutive invalidations
+
 ## 0.4.0
 
 ### Minor Changes
